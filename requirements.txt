@@ -1,1 +1,2 @@
-git+git@github.com:courtois-neuromod/mario.scenes.git
+git+https://github.com/courtois-neuromod/mario.replays.git
+git+https://github.com/courtois-neuromod/mario.scenes.git
