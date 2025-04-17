@@ -1,2 +1,4 @@
 git+https://github.com/courtois-neuromod/mario.replays.git
 git+https://github.com/courtois-neuromod/mario.scenes.git
+pandas
+seaborn
