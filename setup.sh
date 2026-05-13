@@ -37,7 +37,7 @@ else
     echo "==> Wrote config.yaml"
 fi
 
-mkdir -p data/processed logs
+mkdir -p output logs
 
 echo
 echo "Done. Activate the venv with: source .venv/bin/activate"

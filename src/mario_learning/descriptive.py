@@ -17,7 +17,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from mario_learning import plots, provenance
+from mario_learning import plots, provenance, utils
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +34,14 @@ def run(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    staged = utils.add_stage_column(clips)
+    by_pattern = utils.attach_patterns(staged)
     tables = {
+        # Primary (per-subject) views.
         "subjects": _per_subject(clips),
+        "subjects_stages": _per_subject_stage(staged),
+        "subjects_patterns": _per_subject_pattern(by_pattern),
+        # Pooled / secondary diagnostics.
         "scenes": _per_scene(clips),
         "phases": _per_phase(clips),
         "levels": _per_level(clips),
@@ -98,6 +104,30 @@ def _per_phase(clips: pd.DataFrame) -> pd.DataFrame:
         "median_duration_s": g["Duration"].median(),
     }).reset_index()
     return rows
+
+
+def _per_subject_stage(clips: pd.DataFrame) -> pd.DataFrame:
+    """Per (Subject, Stage) clip counts and clear rates — 4-stage split."""
+    g = clips.groupby(["Subject", "Stage"], observed=True)
+    rows = pd.DataFrame({
+        "n_clips": g.size(),
+        "completion_rate": g["Cleared"].mean(),
+        "median_duration_s": g["Duration"].median(),
+    }).reset_index()
+    rows["Stage"] = pd.Categorical(rows["Stage"], categories=utils.STAGES, ordered=True)
+    return rows.sort_values(["Subject", "Stage"])
+
+
+def _per_subject_pattern(long_df: pd.DataFrame) -> pd.DataFrame:
+    """Per (Subject, pattern) clip counts and clear rates."""
+    g = long_df.groupby(["Subject", "pattern"])
+    rows = pd.DataFrame({
+        "n_clips": g.size(),
+        "n_scenes_touched": g["SceneID"].nunique(),
+        "completion_rate": g["Cleared"].mean(),
+        "median_duration_s": g["Duration"].median(),
+    }).reset_index()
+    return rows.sort_values(["Subject", "pattern"])
 
 
 def _per_level(clips: pd.DataFrame) -> pd.DataFrame:

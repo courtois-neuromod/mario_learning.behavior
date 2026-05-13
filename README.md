@@ -81,10 +81,16 @@ operating principles.
 src/mario_learning/        # analysis modules (one file per task)
 tasks.py                   # invoke entry points
 config.yaml                # paths + per-task parameters (gitignored)
-data/processed/            # cached outputs per task per dataset (gitignored)
+output/                    # pipeline outputs per task per dataset (gitignored)
+data/external/             # auto-downloaded inputs, e.g. scenes_mastersheet.csv (gitignored)
 tests/                     # pytest smoke tests on a fixture dataset
 notebooks/archive/         # the original exploratory notebooks
 ```
+
+By convention `data/` is for inputs (the canonical `mario.scenes` dataset
+points at its repo via `config.yaml > datasets.humans.path`, and the Zenodo
+scene-pattern CSV is auto-downloaded to `data/external/`) and `output/` is
+for everything the pipeline produces.
 
 ## Tests
 

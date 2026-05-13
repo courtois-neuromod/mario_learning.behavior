@@ -16,8 +16,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 
-from mario_learning import plots, provenance
+from mario_learning import plots, provenance, utils
 
 log = logging.getLogger(__name__)
 
@@ -68,76 +69,94 @@ def descriptive(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs,
 
 
 def learning_curves(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:
-    """Overlay smoothed curves across datasets, one panel per (Level, variable)."""
+    """Overlay smoothed curves across datasets. Primary: per-pattern. Secondary: per-level."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    sources = {name: Path(p) / "learning_curves.csv" for name, p in datasets.items()}
-    assert_inputs_exist(sources, "learning-curves")
-    frames = []
-    for name, csv in sources.items():
-        df = pd.read_csv(csv)
-        df["dataset"] = name
-        frames.append(df)
-    merged = pd.concat(frames, ignore_index=True)
-    levels = sorted(merged["Level"].unique())
-    variables = [c.removesuffix("_smoothed") for c in merged.columns if c.endswith("_smoothed")]
+    paths: dict[str, Path] = {}
+    for tag, fname, group_col, fig_name in [
+        ("patterns", "learning_curves_by_pattern.csv", "pattern", "learning_curves_overlay_patterns.png"),
+        ("levels", "learning_curves_by_level.csv", "Level", "learning_curves_overlay_levels.png"),
+    ]:
+        sources = {name: Path(p) / fname for name, p in datasets.items()}
+        assert_inputs_exist(sources, "learning-curves")
+        frames = []
+        for name, csv in sources.items():
+            df = pd.read_csv(csv)
+            df["dataset"] = name
+            frames.append(df)
+        merged = pd.concat(frames, ignore_index=True)
+        groups = sorted(merged[group_col].unique())
+        variables = [c.removesuffix("_smoothed") for c in merged.columns if c.endswith("_smoothed")]
+        fig_path = out_dir / fig_name
+        _plot_overlay_grid(merged, group_col, groups, variables, fig_path, cfg=cfg)
+        provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
+        paths[f"figure_{tag}"] = fig_path
+    return paths
 
+
+def _plot_overlay_grid(merged, group_col, groups, variables, out_path, *, cfg) -> None:
     style = plots.style(cfg)
-    fig, axes = plt.subplots(len(variables), len(levels),
-                              figsize=(3.0 * len(levels), 2.4 * len(variables)),
+    fig, axes = plt.subplots(len(variables), len(groups),
+                              figsize=(2.3 * len(groups), 2.2 * len(variables)),
                               sharex="col", squeeze=False)
     palette = plt.get_cmap("tab10")
-    for j, level in enumerate(levels):
+    datasets = sorted(merged["dataset"].unique())
+    for j, group in enumerate(groups):
         for i, var in enumerate(variables):
             ax = axes[i][j]
-            for k, name in enumerate(merged["dataset"].unique()):
-                sub = merged[(merged["Level"] == level) & (merged["dataset"] == name)]
+            for k, name in enumerate(datasets):
+                sub = merged[(merged[group_col] == group) & (merged["dataset"] == name)]
                 if sub.empty:
                     continue
                 sub = sub.groupby("clip_index", as_index=False)[f"{var}_smoothed"].mean()
-                ax.plot(sub["clip_index"], sub[f"{var}_smoothed"], color=palette(k % 10), label=name, lw=1.5)
+                ax.plot(sub["clip_index"], sub[f"{var}_smoothed"], color=palette(k % 10), label=name, lw=1.3)
             if i == 0:
-                ax.set_title(level, fontsize=9)
+                ax.set_title(str(group), fontsize=7, rotation=0)
             if j == 0:
                 ax.set_ylabel(var, fontsize=9)
-            if i == 0 and j == len(levels) - 1:
+            if i == 0 and j == len(groups) - 1:
                 ax.legend(fontsize=7, loc="best")
-    fig_path = out_dir / "learning_curves_overlay.png"
-    fig.suptitle("Learning curves — overlay by dataset")
+            ax.tick_params(labelsize=6)
+    fig.suptitle(f"Learning curves — overlay by dataset (group: {group_col})")
     fig.tight_layout()
-    plots.save_figure(fig, fig_path, dpi=style["dpi"])
-    provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
-    return {"figure": fig_path}
+    plots.save_figure(fig, out_path, dpi=style["dpi"])
 
 
-def scene_performance(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:
-    """Scatter per-scene clear rate per dataset, side-by-side."""
+def pattern_performance(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:
+    """Compare per-pattern clear rate across datasets — per-subject is primary."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    sources = {name: Path(p) / "per_scene.csv" for name, p in datasets.items()}
-    assert_inputs_exist(sources, "scene-performance")
+    sources = {name: Path(p) / "per_subject_pattern.csv" for name, p in datasets.items()}
+    assert_inputs_exist(sources, "pattern-performance")
     frames = []
     for name, csv in sources.items():
         df = pd.read_csv(csv)
         df["dataset"] = name
         frames.append(df)
     merged = pd.concat(frames, ignore_index=True)
-    csv_path = out_dir / "per_scene.csv"
+    csv_path = out_dir / "per_subject_pattern.csv"
     merged.to_csv(csv_path, index=False)
     provenance.write_sidecar(csv_path, parameters=parameters, inputs=inputs)
 
     style = plots.style(cfg)
-    fig, ax = plt.subplots(figsize=(12, 5))
-    pivot = merged.groupby(["dataset", "SceneID"], as_index=False)["Cleared"].mean()
     palette = plt.get_cmap("tab10")
-    for k, (name, sub) in enumerate(pivot.groupby("dataset")):
-        ax.scatter(sub["SceneID"], sub["Cleared"], label=name, alpha=0.7, color=palette(k % 10))
-    ax.set_ylim(0, 1.05)
-    ax.set_ylabel("Clear rate")
-    ax.set_title("Per-scene clear rate by dataset")
-    ax.legend()
-    ax.tick_params(axis="x", labelsize=6, rotation=90)
-    fig_path = out_dir / "per_scene_clear.png"
+    subjects = sorted(merged["Subject"].unique())
+    fig, axes = plt.subplots(len(subjects), 1, figsize=(12, 2.4 * len(subjects)), squeeze=False, sharex=True)
+    for i, subject in enumerate(subjects):
+        ax = axes[i][0]
+        sub = merged[merged["Subject"] == subject]
+        patterns = sorted(sub["pattern"].unique())
+        for k, ds in enumerate(sorted(sub["dataset"].unique())):
+            row = sub[sub["dataset"] == ds].set_index("pattern").reindex(patterns)
+            ax.plot(patterns, row["Cleared"], marker="o", color=palette(k % 10), label=ds)
+        ax.set_ylim(0, 1.05)
+        ax.set_ylabel(f"sub-{subject}\nCleared")
+        ax.grid(alpha=0.3)
+        if i == 0:
+            ax.legend(fontsize=8)
+    axes[-1][0].tick_params(axis="x", labelrotation=60, labelsize=8)
+    fig.suptitle("Per-pattern clear rate by dataset, per subject")
+    fig_path = out_dir / "per_pattern_clear.png"
     fig.tight_layout()
     plots.save_figure(fig, fig_path, dpi=style["dpi"])
     provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
@@ -145,42 +164,160 @@ def scene_performance(datasets: dict[str, Path], out_dir: Path, *, parameters, i
 
 
 def pattern_difficulty(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:
+    """Compare pattern difficulty across datasets.
+
+    Emits three figures:
+
+    - ``cleared_by_pattern_per_model.png`` — the canonical 2-panel "killer" figure.
+      Top: pooled-subjects clear rate per pattern × stage, viridis. Bottom:
+      pooled-subjects clear rate per pattern × dataset (humans, PPO, …), magma.
+      Both panels sorted alphabetically by pattern. Shared x-axis.
+    - ``cleared_by_pattern_pooled_by_stage.png`` — the top panel on its own
+      (useful even with a single dataset).
+    - ``improvement_by_pattern_per_subject.png`` — per-subject improvement
+      diagnostic (line per dataset, panel per subject).
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    sources = {name: Path(p) / "pattern_metrics.csv" for name, p in datasets.items()}
-    assert_inputs_exist(sources, "pattern-difficulty")
-    frames = []
-    for name, csv in sources.items():
+
+    # Per-dataset pattern_metrics carries the 4-stage breakdown.
+    metric_sources = {name: Path(p) / "pattern_metrics.csv" for name, p in datasets.items()}
+    assert_inputs_exist(metric_sources, "pattern-difficulty")
+    metric_frames = []
+    for name, csv in metric_sources.items():
         df = pd.read_csv(csv)
         df["dataset"] = name
-        frames.append(df)
-    merged = pd.concat(frames, ignore_index=True)
+        metric_frames.append(df)
+    merged = pd.concat(metric_frames, ignore_index=True)
     csv_path = out_dir / "pattern_metrics.csv"
     merged.to_csv(csv_path, index=False)
     provenance.write_sidecar(csv_path, parameters=parameters, inputs=inputs)
 
     style = plots.style(cfg)
-    pivot = merged.groupby(["dataset", "pattern"], as_index=False)["clear_discovery"].mean()
+    paths: dict[str, Path] = {"merged": csv_path}
+
+    # ---- killer 2-panel ----
+    long_stage = _melt_stage_metrics(merged)
+    long_model = _pool_clips_by_dataset(datasets, cfg)
+    killer_path = out_dir / "cleared_by_pattern_per_model.png"
+    _figure_killer(long_stage, long_model, killer_path, cfg=cfg)
+    provenance.write_sidecar(killer_path, parameters=parameters, inputs=inputs)
+    paths["killer"] = killer_path
+
+    # ---- top panel only ----
+    pooled_path = out_dir / "cleared_by_pattern_pooled_by_stage.png"
+    _figure_stage_only(long_stage, pooled_path, cfg=cfg)
+    provenance.write_sidecar(pooled_path, parameters=parameters, inputs=inputs)
+    paths["figure_pooled"] = pooled_path
+
+    # ---- per-subject improvement diagnostic ----
+    palette = plt.get_cmap("tab10")
+    subjects = sorted(merged["Subject"].unique())
     patterns = sorted(merged["pattern"].unique())
     datasets_l = sorted(merged["dataset"].unique())
-    palette = plt.get_cmap("tab10")
-    fig, ax = plt.subplots(figsize=(10, max(4, 0.3 * len(patterns))))
-    y = np.arange(len(patterns))
-    width = 0.8 / max(1, len(datasets_l))
-    for k, name in enumerate(datasets_l):
-        sub = pivot[pivot["dataset"] == name].set_index("pattern").reindex(patterns)
-        ax.barh(y + k * width, sub["clear_discovery"], height=width, color=palette(k % 10), label=name)
-    ax.set_yticks(y + width * (len(datasets_l) - 1) / 2)
-    ax.set_yticklabels(patterns, fontsize=8)
-    ax.set_xlim(0, 1)
-    ax.set_xlabel("Clear rate (discovery)")
-    ax.legend()
-    ax.set_title("Pattern difficulty — overlay by dataset")
-    fig_path = out_dir / "pattern_difficulty_overlay.png"
+    fig, axes = plt.subplots(len(subjects), 1, figsize=(12, max(3, 0.4 * len(patterns)) + 1.5 * len(subjects)),
+                              squeeze=False, sharex=True)
+    for i, subject in enumerate(subjects):
+        ax = axes[i][0]
+        for k, ds in enumerate(datasets_l):
+            sub = merged[(merged["Subject"] == subject) & (merged["dataset"] == ds)].set_index("pattern").reindex(patterns)
+            ax.plot(patterns, sub["improvement"], marker="o", color=palette(k % 10), label=ds)
+        ax.set_ylabel(f"sub-{subject}\nimprovement\n(late_prac − early_disc)")
+        ax.axhline(0, color="gray", lw=0.5)
+        ax.grid(alpha=0.3)
+        if i == 0:
+            ax.legend(fontsize=8)
+    axes[-1][0].tick_params(axis="x", labelrotation=60, labelsize=8)
+    fig.suptitle("Per-pattern improvement by dataset, per subject")
+    fig_path = out_dir / "improvement_by_pattern_per_subject.png"
     fig.tight_layout()
     plots.save_figure(fig, fig_path, dpi=style["dpi"])
     provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
-    return {"merged": csv_path, "figure": fig_path}
+    paths["figure_improvement"] = fig_path
+    return paths
+
+
+def _melt_stage_metrics(merged: pd.DataFrame) -> pd.DataFrame:
+    """Wide-form pattern_metrics → long (dataset, Subject, pattern, Stage, Cleared)."""
+    return merged.melt(
+        id_vars=["dataset", "Subject", "pattern"],
+        value_vars=utils.STAGES,
+        var_name="Stage", value_name="Cleared",
+    ).dropna(subset=["Cleared"])
+
+
+def _pool_clips_by_dataset(datasets: dict[str, Path], cfg: dict) -> pd.DataFrame:
+    """Read each dataset's `output/load/{name}/clips.parquet`, attach patterns, return long-form."""
+    frames = []
+    for name in datasets:
+        cache = utils.output_dir(cfg, "load") / name / "clips.parquet"
+        if not cache.exists():
+            raise FileNotFoundError(
+                f"compare-pattern-difficulty: missing {cache}. Run `inv load --dataset {name}` first."
+            )
+        df = pd.read_parquet(cache)
+        df["dataset"] = name
+        frames.append(utils.attach_patterns(df))
+    return pd.concat(frames, ignore_index=True)
+
+
+def _figure_killer(long_stage: pd.DataFrame, long_model: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
+    style = plots.style(cfg)
+    patterns = sorted(set(long_stage["pattern"]).union(long_model["pattern"]))
+    fig, axes = plt.subplots(2, 1, figsize=(16, 6), sharex=True)
+
+    stage_grouped = long_stage.groupby(["pattern", "Stage"], observed=True)["Cleared"].mean().reset_index()
+    sns.barplot(
+        data=stage_grouped, x="pattern", y="Cleared", hue="Stage",
+        order=patterns, hue_order=utils.STAGES,
+        palette="viridis", ax=axes[0],
+    )
+    axes[0].set_ylim(0, 1.05)
+    axes[0].set_xlabel("")
+    axes[0].set_ylabel("Cleared")
+    axes[0].set_title("Pooled subjects — by stage", fontsize=10)
+    axes[0].set_axisbelow(True)
+    axes[0].grid(axis="y", alpha=0.3)
+    axes[0].legend(title="Stage", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
+
+    model_grouped = long_model.groupby(["pattern", "dataset"])["Cleared"].mean().reset_index()
+    datasets_order = sorted(model_grouped["dataset"].unique())
+    sns.barplot(
+        data=model_grouped, x="pattern", y="Cleared", hue="dataset",
+        order=patterns, hue_order=datasets_order,
+        palette="magma", ax=axes[1],
+    )
+    axes[1].set_ylim(0, 1.05)
+    axes[1].set_xlabel("Pattern")
+    axes[1].set_ylabel("Cleared")
+    axes[1].set_title("Pooled subjects — by model/dataset", fontsize=10)
+    axes[1].set_axisbelow(True)
+    axes[1].grid(axis="y", alpha=0.3)
+    axes[1].legend(title="Model", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
+    axes[1].tick_params(axis="x", labelrotation=60, labelsize=9)
+    fig.tight_layout()
+    plots.save_figure(fig, out_path, dpi=max(style["dpi"], 200))
+
+
+def _figure_stage_only(long_stage: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
+    style = plots.style(cfg)
+    grouped = long_stage.groupby(["pattern", "Stage"], observed=True)["Cleared"].mean().reset_index()
+    patterns = sorted(grouped["pattern"].unique())
+    fig, ax = plt.subplots(figsize=(16, 4))
+    sns.barplot(
+        data=grouped, x="pattern", y="Cleared", hue="Stage",
+        order=patterns, hue_order=utils.STAGES,
+        palette="viridis", ax=ax,
+    )
+    ax.set_ylim(0, 1.05)
+    ax.set_xlabel("Pattern")
+    ax.set_ylabel("Cleared")
+    ax.set_axisbelow(True)
+    ax.grid(axis="y", alpha=0.3)
+    ax.tick_params(axis="x", labelrotation=60, labelsize=9)
+    ax.legend(title="Stage", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
+    fig.tight_layout()
+    plots.save_figure(fig, out_path, dpi=style["dpi"])
 
 
 def clustering(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:
@@ -231,9 +368,10 @@ def clustering(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, 
 
 
 def summary(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:
+    """Concat per-(subject, pattern, stage) summary tables across datasets."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    sources = {name: Path(p) / "per_level_per_scene.csv" for name, p in datasets.items()}
+    sources = {name: Path(p) / "per_subject_pattern_stage.csv" for name, p in datasets.items()}
     assert_inputs_exist(sources, "summary")
     frames = []
     for name, csv in sources.items():
@@ -241,10 +379,10 @@ def summary(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg
         df["dataset"] = name
         frames.append(df)
     merged = pd.concat(frames, ignore_index=True)
-    csv_path = out_dir / "per_level_per_scene.csv"
+    csv_path = out_dir / "per_subject_pattern_stage.csv"
     merged.to_csv(csv_path, index=False)
     provenance.write_sidecar(csv_path, parameters=parameters, inputs=inputs)
-    log.info("compare-summary: tables merged at %s. Use plots from individual datasets for visual diffs.", csv_path)
+    log.info("compare-summary: tables merged at %s. Use per-dataset figures for visual diffs.", csv_path)
     return {"merged": csv_path}
 
 
@@ -272,27 +410,18 @@ def traces(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg)
 
 
 def survival(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:
-    """Overlay KM curves per scene and run a multivariate log-rank test across datasets."""
+    """Overlay per-(subject, pattern) KM curves across datasets.
+
+    Reads each dataset's `per_subject_pattern_km.csv` (long-form survival
+    function). One figure per pattern, panels per subject, lines per dataset.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    sources = {name: Path(p) for name, p in datasets.items()}
-    pair_paths = {name: p / "per_scene_summary.csv" for name, p in sources.items()}
-    assert_inputs_exist(pair_paths, "survival")
-
-    # We need per-(scene, observation) duration/event pairs to refit the KM
-    # curves. The per-dataset task wrote per_scene_km.csv (long form). For the
-    # log-rank we approximate with the duration/event implied by `n_events` and
-    # the longest-duration step in km_long — easier route: rebuild from
-    # per_scene_summary's n_observations and n_events isn't sufficient for a
-    # full log-rank. Instead, expect each per-dataset cache directory to also
-    # contain ``per_scene_km.csv`` (the survival-function long form) for the
-    # overlay plot; for stats we approximate by treating the KM steps as the
-    # observed deaths and the rest as censored at the maximum step time.
-    long_sources = {name: p / "per_scene_km.csv" for name, p in sources.items()}
-    assert_inputs_exist(long_sources, "survival")
+    sources = {name: Path(p) / "per_subject_pattern_km.csv" for name, p in datasets.items()}
+    assert_inputs_exist(sources, "survival")
 
     long_frames = []
-    for name, csv in long_sources.items():
+    for name, csv in sources.items():
         df = pd.read_csv(csv)
         df["dataset"] = name
         long_frames.append(df)
@@ -302,28 +431,40 @@ def survival(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cf
     figs_dir.mkdir(exist_ok=True)
     style = plots.style(cfg)
     palette = plt.get_cmap("tab10")
-    stats_rows: list[dict] = []
-    for scene in sorted(merged_long["SceneID"].unique()):
-        fig, ax = plt.subplots(figsize=(5, 3.5))
-        scene_df = merged_long[merged_long["SceneID"] == scene]
-        for k, name in enumerate(sorted(scene_df["dataset"].unique())):
-            sub = scene_df[scene_df["dataset"] == name]
-            ax.step(sub["t"], sub["S"], where="post", color=palette(k % 10), label=name)
-        ax.set_title(scene, fontsize=10)
-        ax.set_xlabel("duration")
-        ax.set_ylabel("S(t)")
-        ax.set_ylim(0, 1.05)
-        ax.legend(fontsize=8)
-        fig_path = figs_dir / f"{scene}_km_overlay.png"
+    coverage_rows: list[dict] = []
+    patterns = sorted(merged_long["pattern"].unique())
+    subjects = sorted(merged_long["Subject"].unique())
+    for pattern in patterns:
+        cols = min(3, len(subjects))
+        rows = (len(subjects) + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(3.5 * cols, 2.4 * rows), squeeze=False, sharey=True)
+        for i, subject in enumerate(subjects):
+            ax = axes[i // cols][i % cols]
+            sub = merged_long[(merged_long["pattern"] == pattern) & (merged_long["Subject"] == subject)]
+            for k, ds in enumerate(sorted(sub["dataset"].unique())):
+                ds_df = sub[sub["dataset"] == ds]
+                ax.step(ds_df["t"], ds_df["S"], where="post", color=palette(k % 10), label=ds, lw=1.2)
+            ax.set_title(f"sub-{subject}", fontsize=8)
+            ax.set_ylim(0, 1.05)
+            if i == 0:
+                ax.legend(fontsize=7)
+        for i in range(len(subjects), rows * cols):
+            axes[i // cols][i % cols].axis("off")
+        fig.suptitle(f"KM by pattern: {pattern}")
+        fig_path = figs_dir / f"{pattern.replace('/', '_')}_km_overlay.png"
         fig.tight_layout()
         plots.save_figure(fig, fig_path, dpi=style["dpi"])
         provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
-        stats_rows.append({"SceneID": scene, "n_datasets": scene_df["dataset"].nunique()})
+        coverage_rows.append({
+            "pattern": pattern,
+            "n_datasets": merged_long[merged_long["pattern"] == pattern]["dataset"].nunique(),
+            "n_subjects": merged_long[merged_long["pattern"] == pattern]["Subject"].nunique(),
+        })
 
-    stats_path = out_dir / "scene_overlap.csv"
-    pd.DataFrame(stats_rows).to_csv(stats_path, index=False)
-    provenance.write_sidecar(stats_path, parameters=parameters, inputs=inputs)
-    return {"scene_overlap": stats_path}
+    coverage_path = out_dir / "pattern_overlap.csv"
+    pd.DataFrame(coverage_rows).to_csv(coverage_path, index=False)
+    provenance.write_sidecar(coverage_path, parameters=parameters, inputs=inputs)
+    return {"pattern_overlap": coverage_path}
 
 
 def distribution_distances(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:

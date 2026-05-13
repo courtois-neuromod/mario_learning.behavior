@@ -13,7 +13,7 @@ datasets:
   #   path: <PLACEHOLDER_AGENT_DATASET_PATH>
 
 paths:
-  cache: data/processed
+  output: output
   logs: logs
 
 slurm:
@@ -52,7 +52,10 @@ analysis:
     scene_space:
       ground_metric: umap
       jaccard_source: mario.scenes_annotations
-    grouping: phase
+    # `subject_stage`: pairs only stages within the same subject (4 stages, see
+    # feedback-no-subject-averaging + feedback-four-stage-split). Other modes:
+    # stage | phase | subject | early_late | dataset.
+    grouping: subject_stage
   figure:
     dpi: 150
     palette: tab10

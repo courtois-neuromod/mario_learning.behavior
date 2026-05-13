@@ -1,20 +1,19 @@
-"""Kaplan-Meier survival analyses for per-clip and time-to-mastery framings.
+"""Kaplan-Meier survival analyses, per-pattern (primary) and per-scene (secondary).
 
 Two framings, selected by ``config.analysis.survival.event``:
 
-- **death** (default). For each scene, every clip contributes a (duration, event)
-  pair: duration = ``EndFrame − StartFrame`` (frames within the clip), event = 1 if
-  ``Outcome == death`` else 0 (right-censored at clip end). Per-scene KM curves
-  describe how within-clip mortality risk distributes over the traversal.
-- **first_clear**. For each (Subject, SceneID), find the first clip in ClipCode
-  order whose outcome is ``completed``; duration = the ordinal index of that
-  attempt; event = 1 if a clear was ever observed (else right-censored at the
-  last attempt). KM curves describe how many attempts it takes to succeed.
+- **death** (default). Every clip contributes (duration, event) where
+  duration = ``EndFrame − StartFrame`` and event = 1 iff ``Outcome == death``
+  (right-censored at clip end). KM curves describe how within-clip mortality
+  risk distributes over the traversal.
+- **first_clear**. For each (Subject, group) the first clip in ClipCode order
+  whose outcome is `completed` defines the duration (ordinal index of that
+  attempt); event = 1 iff a clear was ever observed. Curves describe time-to-
+  mastery.
 
-Outputs:
-- ``per_scene_km.csv`` — long-form KM survival table (scene_id, t, S(t), n_at_risk)
-- ``per_scene_summary.csv`` — median survival + n + event counts per scene
-- ``figures/`` — one PNG per scene, plus a multi-scene grid for the level
+Primary grain is per (Subject, Pattern) — see [[feedback-patterns-over-scenes]]
+and [[feedback-no-subject-averaging]]. Per-scene KM (the previous primary) is
+retained as a per-level diagnostic.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from lifelines import KaplanMeierFitter
 
-from mario_learning import plots, provenance
+from mario_learning import plots, provenance, utils
 
 log = logging.getLogger(__name__)
 
@@ -47,111 +46,145 @@ def run(
     s_cfg = cfg["analysis"]["survival"]
     event_mode = s_cfg["event"]
     min_attempts = int(s_cfg["min_attempts_per_scene"])
+    paths: dict[str, Path] = {}
 
-    pairs = _make_duration_event(clips, event_mode)
-    pairs = _filter_min_attempts(pairs, min_attempts)
-    if pairs.empty:
-        log.warning("survival: no scenes meet min_attempts_per_scene=%d", min_attempts)
-        return {}
+    # Primary: per (Subject, Pattern)
+    long_df = utils.attach_patterns(clips)
+    pattern_pairs = _make_duration_event(long_df, event_mode, group_keys=["Subject", "pattern"])
+    pattern_pairs = _filter_min(pattern_pairs, "pattern", min_attempts)
+    if not pattern_pairs.empty:
+        pkm_long, pkm_summary = _fit_km(pattern_pairs, group_keys=["Subject", "pattern"])
+        plong = out_dir / "per_subject_pattern_km.csv"
+        pkm_long.to_csv(plong, index=False)
+        provenance.write_sidecar(plong, parameters=parameters, inputs=inputs)
+        psum = out_dir / "per_subject_pattern_summary.csv"
+        pkm_summary.to_csv(psum, index=False)
+        provenance.write_sidecar(psum, parameters=parameters, inputs=inputs)
+        paths["pattern_km_long"] = plong
+        paths["pattern_summary"] = psum
+        for subject, sub_df in pattern_pairs.groupby("Subject"):
+            fig_path = figs_dir / f"sub-{subject}_pattern_km.png"
+            _figure_grid(sub_df, group_col="pattern", title=f"sub-{subject} — KM by pattern",
+                         out_path=fig_path, cfg=cfg)
+            provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
+            paths[f"figure_pattern_sub-{subject}"] = fig_path
+        log.info("survival[%s] (primary, per-pattern): %d subjects × %d patterns",
+                 event_mode, pattern_pairs["Subject"].nunique(), pattern_pairs["pattern"].nunique())
 
-    km_long, summary = _fit_km_per_scene(pairs)
-
-    long_path = out_dir / "per_scene_km.csv"
-    km_long.to_csv(long_path, index=False)
-    provenance.write_sidecar(long_path, parameters=parameters, inputs=inputs)
-
-    summary_path = out_dir / "per_scene_summary.csv"
-    summary.to_csv(summary_path, index=False)
-    provenance.write_sidecar(summary_path, parameters=parameters, inputs=inputs)
-
-    paths = {"km_long": long_path, "summary": summary_path}
-    for level, level_df in pairs.groupby("Level"):
-        fig_path = figs_dir / f"{level}_km.png"
-        _figure_level(level, level_df, fig_path, cfg=cfg)
-        provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
-        paths[f"figure_{level}"] = fig_path
-
-    log.info("survival[%s]: %d scenes, %d events", event_mode, summary["SceneID"].nunique(), int(summary["n_events"].sum()))
+    # Secondary: per-scene KM (kept for diagnostics)
+    scene_pairs = _make_duration_event(clips, event_mode, group_keys=["Subject", "SceneID"])
+    scene_pairs = _filter_min(scene_pairs, "SceneID", min_attempts)
+    if not scene_pairs.empty:
+        skm_long, skm_summary = _fit_km(scene_pairs, group_keys=["SceneID"])
+        slong = out_dir / "per_scene_km.csv"
+        skm_long.to_csv(slong, index=False)
+        provenance.write_sidecar(slong, parameters=parameters, inputs=inputs)
+        ssum = out_dir / "per_scene_summary.csv"
+        skm_summary.to_csv(ssum, index=False)
+        provenance.write_sidecar(ssum, parameters=parameters, inputs=inputs)
+        paths["scene_km_long"] = slong
+        paths["scene_summary"] = ssum
+        for level, level_df in scene_pairs.groupby("Level"):
+            fig_path = figs_dir / f"{level}_km.png"
+            _figure_grid(level_df, group_col="SceneID", title=f"{level} — KM per scene",
+                         out_path=fig_path, cfg=cfg)
+            provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
+            paths[f"figure_scene_{level}"] = fig_path
+        log.info("survival[%s] (secondary, per-scene): %d scenes, %d events",
+                 event_mode, skm_summary["SceneID"].nunique(), int(skm_summary["n_events"].sum()))
     return paths
 
 
-def _make_duration_event(clips: pd.DataFrame, event_mode: str) -> pd.DataFrame:
-    """Return one (Subject, SceneID, Level, duration, event) row per observation."""
+def _make_duration_event(
+    df: pd.DataFrame,
+    event_mode: str,
+    *,
+    group_keys: list[str],
+) -> pd.DataFrame:
+    """Return a DataFrame with columns: *group_keys, Level, duration, event."""
     if event_mode == "death":
-        frames = clips["EndFrame"].astype(int) - clips["StartFrame"].astype(int)
-        return pd.DataFrame({
-            "Subject": clips["Subject"],
-            "SceneID": clips["SceneID"],
-            "Level": clips["Level"],
-            "duration": frames.clip(lower=1).astype(float),
-            "event": (clips["Outcome"] == "death").astype(int),
+        out = pd.DataFrame({
+            "duration": (df["EndFrame"].astype(int) - df["StartFrame"].astype(int)).clip(lower=1).astype(float),
+            "event": (df["Outcome"] == "death").astype(int),
+            "Level": df["Level"],
         })
+        for key in group_keys:
+            out[key] = df[key].values
+        return out
     if event_mode == "first_clear":
         rows = []
-        for (subject, scene), g in clips.sort_values("ClipCode").groupby(["Subject", "SceneID"]):
+        for key_vals, g in df.sort_values("ClipCode").groupby(group_keys):
             level = g["Level"].iloc[0]
             attempts = g.reset_index(drop=True)
             ix = attempts.index[attempts["Cleared"] == 1]
-            if len(ix):
-                duration = int(ix[0]) + 1
-                event = 1
-            else:
-                duration = len(attempts)
-                event = 0
-            rows.append({"Subject": subject, "SceneID": scene, "Level": level,
-                         "duration": float(duration), "event": event})
+            duration = (int(ix[0]) + 1) if len(ix) else len(attempts)
+            event = 1 if len(ix) else 0
+            row = dict(zip(group_keys, key_vals if isinstance(key_vals, tuple) else (key_vals,), strict=False))
+            row.update({"Level": level, "duration": float(duration), "event": event})
+            rows.append(row)
         return pd.DataFrame(rows)
     raise ValueError(f"Unknown event mode: {event_mode}")
 
 
-def _filter_min_attempts(pairs: pd.DataFrame, min_attempts: int) -> pd.DataFrame:
-    counts = pairs.groupby("SceneID").size()
+def _filter_min(pairs: pd.DataFrame, key: str, min_attempts: int) -> pd.DataFrame:
+    counts = pairs.groupby(key).size()
     keep = counts[counts >= min_attempts].index
-    return pairs[pairs["SceneID"].isin(keep)].copy()
+    return pairs[pairs[key].isin(keep)].copy()
 
 
-def _fit_km_per_scene(pairs: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _fit_km(pairs: pd.DataFrame, *, group_keys: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     long_rows = []
     summary_rows = []
-    for scene, g in pairs.groupby("SceneID"):
+    for key_vals, g in pairs.groupby(group_keys):
+        if not isinstance(key_vals, tuple):
+            key_vals = (key_vals,)
         kmf = KaplanMeierFitter()
         kmf.fit(g["duration"], event_observed=g["event"])
         sf = kmf.survival_function_.reset_index()
         sf.columns = ["t", "S"]
-        sf["SceneID"] = scene
+        for k, v in zip(group_keys, key_vals, strict=False):
+            sf[k] = v
         sf["n_at_risk"] = kmf.event_table["at_risk"].to_numpy()
-        long_rows.append(sf[["SceneID", "t", "S", "n_at_risk"]])
+        long_rows.append(sf)
 
         median = kmf.median_survival_time_
-        summary_rows.append({
-            "SceneID": scene,
-            "Level": g["Level"].iloc[0],
+        row = dict(zip(group_keys, key_vals, strict=False))
+        row.update({
+            "Level": g["Level"].iloc[0] if "Level" in g.columns else None,
             "n_observations": len(g),
             "n_events": int(g["event"].sum()),
             "median_survival": median if not pd.isna(median) else None,
         })
+        summary_rows.append(row)
     return pd.concat(long_rows, ignore_index=True), pd.DataFrame(summary_rows)
 
 
-def _figure_level(level: str, level_df: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
+def _figure_grid(
+    pairs: pd.DataFrame,
+    *,
+    group_col: str,
+    title: str,
+    out_path: Path,
+    cfg: dict,
+) -> None:
     style = plots.style(cfg)
-    scenes = sorted(level_df["SceneID"].unique(), key=lambda s: int(s.split("s")[-1]))
-    n = len(scenes)
+    groups = sorted(pairs[group_col].unique())
+    n = len(groups)
     cols = min(4, n)
     rows = (n + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(3.0 * cols, 2.4 * rows), squeeze=False, sharey=True)
-    for i, scene in enumerate(scenes):
+    for i, group in enumerate(groups):
         ax = axes[i // cols][i % cols]
-        g = level_df[level_df["SceneID"] == scene]
+        g = pairs[pairs[group_col] == group]
         kmf = KaplanMeierFitter()
-        kmf.fit(g["duration"], event_observed=g["event"], label=scene)
+        kmf.fit(g["duration"], event_observed=g["event"], label=str(group))
         kmf.plot_survival_function(ax=ax, ci_show=True)
-        ax.set_title(scene, fontsize=8)
+        ax.set_title(f"{group}", fontsize=8)
         ax.set_ylim(0, 1.05)
         ax.set_xlabel("")
         ax.legend([], frameon=False)
     for i in range(n, rows * cols):
         axes[i // cols][i % cols].axis("off")
-    fig.suptitle(f"{level} — KM survival per scene")
+    fig.suptitle(title)
     fig.tight_layout()
     plots.save_figure(fig, out_path, dpi=style["dpi"])

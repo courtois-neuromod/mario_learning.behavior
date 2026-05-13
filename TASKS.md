@@ -22,13 +22,13 @@ parameters, and inputs hash. Idempotency is sidecar-based.
 
 Walks `sub-*/ses-*/gamelogs/*_summary.json`, builds a per-clip DataFrame
 (see schema in `src/mario_learning/loader.py`), and caches it as
-`data/processed/load/{name}/clips.parquet`. Re-runs skip unchanged datasets.
+`output/load/{name}/clips.parquet`. Re-runs skip unchanged datasets.
 Every other task implicitly calls this on entry.
 
 ### `inv descriptive --dataset NAME`
 
 Emits `subjects.csv`, `scenes.csv`, `phases.csv`, `levels.csv` aggregations
-and a `desc-qc.png` summary panel into `data/processed/descriptive/{name}/`.
+and a `desc-qc.png` summary panel into `output/descriptive/{name}/`.
 
 ### `inv learning-curves --dataset NAME`
 
@@ -102,7 +102,7 @@ the compare task).
 ## Cross-dataset comparison tasks
 
 Each `compare-*` task reads from the per-dataset cache directories under
-`data/processed/{task}/{name}/`. **Run the per-dataset task first** for every
+`output/{task}/{name}/`. **Run the per-dataset task first** for every
 dataset you want to include — the compare task errors with a clear message
 if any input cache is missing.
 
@@ -112,7 +112,7 @@ if any input cache is missing.
 | `compare-learning-curves` | Overlay smoothed curves per (Level, Variable). |
 | `compare-scene-performance` | Per-scene clear rate scatter, colored by dataset. |
 | `compare-pattern-difficulty` | Grouped horizontal bars of clear-rate by pattern. |
-| `compare-clustering` | Overlay UMAP scatters (note: embeddings are computed per dataset, axes are not aligned). |
+| `compare-clustering` | Compare per-cluster clear rates across datasets (UMAP itself is deterministic from the Zenodo annotations, so not overlaid). |
 | `compare-summary` | Concat per-level/per-scene tables for downstream analysis. |
 | `compare-traces` | Coverage table over the per-dataset trace PNGs. |
 | `compare-survival` | Per-scene KM curve overlays + a scene-coverage table. |

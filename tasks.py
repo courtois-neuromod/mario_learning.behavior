@@ -59,7 +59,7 @@ def _load_clips_for_task(cfg, name, path, subject, session, run, force):
     """Shared loader call for every per-dataset analysis task."""
     from mario_learning import loader
 
-    cache = utils.cache_dir(cfg, "load") / name
+    cache = utils.output_dir(cfg, "load") / name
     subs, sess, runs = _selectors(subject, session, run)
     df = loader.load_clips(
         dataset_path=path,
@@ -109,7 +109,7 @@ def descriptive(c, dataset, subject=None, session=None, run=None, force=False):
     cfg = utils.load_config()
     name, path = _resolve_dataset(cfg, dataset)
     df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    out_dir = utils.cache_dir(cfg, "descriptive") / name
+    out_dir = utils.output_dir(cfg, "descriptive") / name
 
     canary = out_dir / "subjects.csv"
     if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
@@ -135,7 +135,7 @@ def learning_curves(c, dataset, subject=None, session=None, run=None, force=Fals
     name, path = _resolve_dataset(cfg, dataset)
     df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
     parameters = {**parameters, "smoothing_window": cfg["analysis"]["learning_curves"]["smoothing_window"]}
-    out_dir = utils.cache_dir(cfg, "learning_curves") / name
+    out_dir = utils.output_dir(cfg, "learning_curves") / name
 
     canary = out_dir / "learning_curves.csv"
     if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
@@ -159,7 +159,7 @@ def summary(c, dataset, subject=None, session=None, run=None, force=False):
     cfg = utils.load_config()
     name, path = _resolve_dataset(cfg, dataset)
     df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    out_dir = utils.cache_dir(cfg, "summary") / name
+    out_dir = utils.output_dir(cfg, "summary") / name
 
     canary = out_dir / "per_level_per_scene.csv"
     if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
@@ -169,28 +169,28 @@ def summary(c, dataset, subject=None, session=None, run=None, force=False):
     log.info("summary %s -> %s", name, out_dir)
 
 
-@task(name="scene-performance", help={
+@task(name="pattern-performance", help={
     "dataset": "Dataset name from config.yaml > datasets.",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
     "force": "Recompute even if outputs and sidecars match.",
 })
-def scene_performance(c, dataset, subject=None, session=None, run=None, force=False):
-    """Per-scene performance table + per (subject, level) facet-grid figure."""
-    from mario_learning import scene_performance as analysis
+def pattern_performance(c, dataset, subject=None, session=None, run=None, force=False):
+    """Per (subject, pattern) performance table + per-subject pattern panel grid."""
+    from mario_learning import pattern_performance as analysis
 
     cfg = utils.load_config()
     name, path = _resolve_dataset(cfg, dataset)
     df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    out_dir = utils.cache_dir(cfg, "scene_performance") / name
+    out_dir = utils.output_dir(cfg, "pattern_performance") / name
 
-    canary = out_dir / "per_scene.csv"
+    canary = out_dir / "per_subject_pattern.csv"
     if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
-        log.info("scene-performance %s: cache hit at %s", name, out_dir)
+        log.info("pattern-performance %s: cache hit at %s", name, out_dir)
         return
     analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
-    log.info("scene-performance %s -> %s", name, out_dir)
+    log.info("pattern-performance %s -> %s", name, out_dir)
 
 
 @task(name="pattern-difficulty", help={
@@ -208,7 +208,7 @@ def pattern_difficulty(c, dataset, subject=None, session=None, run=None, force=F
     name, path = _resolve_dataset(cfg, dataset)
     df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
     parameters = {**parameters, **cfg["analysis"]["pattern_difficulty"]}
-    out_dir = utils.cache_dir(cfg, "pattern_difficulty") / name
+    out_dir = utils.output_dir(cfg, "pattern_difficulty") / name
 
     canary = out_dir / "pattern_metrics.csv"
     if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
@@ -233,7 +233,7 @@ def clustering(c, dataset, subject=None, session=None, run=None, force=False):
     name, path = _resolve_dataset(cfg, dataset)
     df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
     parameters = {**parameters, **cfg["analysis"]["clustering"]}
-    out_dir = utils.cache_dir(cfg, "clustering") / name
+    out_dir = utils.output_dir(cfg, "clustering") / name
 
     canary = out_dir / "scenes_clustered.csv"
     if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
@@ -258,7 +258,7 @@ def traces(c, dataset, subject=None, session=None, run=None, force=False):
     name, path = _resolve_dataset(cfg, dataset)
     df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
     parameters = {**parameters, **cfg["analysis"]["traces"]}
-    out_dir = utils.cache_dir(cfg, "traces") / name
+    out_dir = utils.output_dir(cfg, "traces") / name
 
     # Use a per-(subject, level) canary file as the idempotency probe.
     # Even one missing file per subject re-triggers the run; cheap enough.
@@ -286,7 +286,7 @@ def survival(c, dataset, subject=None, session=None, run=None, force=False):
     name, path = _resolve_dataset(cfg, dataset)
     df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
     parameters = {**parameters, **cfg["analysis"]["survival"]}
-    out_dir = utils.cache_dir(cfg, "survival") / name
+    out_dir = utils.output_dir(cfg, "survival") / name
 
     canary = out_dir / "per_scene_summary.csv"
     if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
@@ -311,7 +311,7 @@ def distribution_distances(c, dataset, subject=None, session=None, run=None, for
     name, path = _resolve_dataset(cfg, dataset)
     df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
     parameters = {**parameters, **cfg["analysis"]["distribution_distances"]}
-    out_dir = utils.cache_dir(cfg, "distribution_distances") / name
+    out_dir = utils.output_dir(cfg, "distribution_distances") / name
 
     canary = out_dir / "scalar.csv"
     if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
@@ -319,13 +319,13 @@ def distribution_distances(c, dataset, subject=None, session=None, run=None, for
         return
 
     # Prefer the dataset's own clustering UMAP cache if present; else None → Jaccard fallback.
-    umap_coords = utils.cache_dir(cfg, "clustering") / name / "umap_2d.csv"
+    umap_coords = utils.output_dir(cfg, "clustering") / name / "umap_2d.csv"
     umap_coords = umap_coords if umap_coords.exists() else None
     analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg, umap_coords_path=umap_coords)
     log.info("distribution-distances %s -> %s", name, out_dir)
 
 
-@task(help={
+@task(name="run-all", help={
     "dataset": "Dataset name from config.yaml > datasets.",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
@@ -333,7 +333,7 @@ def distribution_distances(c, dataset, subject=None, session=None, run=None, for
     "force": "Recompute every step even if its sidecar matches.",
     "skip": "Comma-separated task names to skip (e.g. 'traces,clustering').",
 })
-def all(c, dataset, subject=None, session=None, run=None, force=False, skip=None):
+def run_all(c, dataset, subject=None, session=None, run=None, force=False, skip=None):
     """Run every per-dataset analysis in order. Idempotent — skips steps whose sidecars match."""
     skip_set = set(utils.split_csv(skip) or [])
     sequence = [
@@ -341,7 +341,7 @@ def all(c, dataset, subject=None, session=None, run=None, force=False, skip=None
         ("descriptive", descriptive),
         ("learning-curves", learning_curves),
         ("summary", summary),
-        ("scene-performance", scene_performance),
+        ("pattern-performance", pattern_performance),
         ("pattern-difficulty", pattern_difficulty),
         ("clustering", clustering),
         ("traces", traces),
@@ -370,7 +370,7 @@ def _resolve_compare_inputs(cfg, datasets_csv: str | None, task_name: str) -> tu
     out = {}
     inputs = []
     for name, _ in pairs:
-        d = utils.cache_dir(cfg, task_name) / name
+        d = utils.output_dir(cfg, task_name) / name
         out[name] = d
         inputs.append(d)
     return out, inputs
@@ -379,7 +379,7 @@ def _resolve_compare_inputs(cfg, datasets_csv: str | None, task_name: str) -> tu
 def _run_compare(c, task_name: str, datasets_csv, force, runner):
     cfg = utils.load_config()
     sources, inputs = _resolve_compare_inputs(cfg, datasets_csv, task_name)
-    out_dir = utils.cache_dir(cfg, "compare") / task_name
+    out_dir = utils.output_dir(cfg, "compare") / task_name
     parameters = {"datasets": sorted(sources)}
     canary = out_dir / "_compare.json"
     if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
@@ -404,11 +404,11 @@ def compare_learning_curves(c, datasets=None, force=False):
     _run_compare(c, "learning_curves", datasets, force, cmp.learning_curves)
 
 
-@task(name="compare-scene-performance", help={"datasets": "Comma-separated dataset names.", "force": "Recompute."})
-def compare_scene_performance(c, datasets=None, force=False):
-    """Compare per-scene performance across datasets."""
+@task(name="compare-pattern-performance", help={"datasets": "Comma-separated dataset names.", "force": "Recompute."})
+def compare_pattern_performance(c, datasets=None, force=False):
+    """Compare per-pattern performance across datasets."""
     from mario_learning import compare as cmp
-    _run_compare(c, "scene_performance", datasets, force, cmp.scene_performance)
+    _run_compare(c, "pattern_performance", datasets, force, cmp.pattern_performance)
 
 
 @task(name="compare-pattern-difficulty", help={"datasets": "Comma-separated dataset names.", "force": "Recompute."})
@@ -462,16 +462,16 @@ ns.add_task(load)
 ns.add_task(descriptive)
 ns.add_task(learning_curves)
 ns.add_task(summary)
-ns.add_task(scene_performance)
+ns.add_task(pattern_performance)
 ns.add_task(pattern_difficulty)
 ns.add_task(clustering)
 ns.add_task(traces)
 ns.add_task(survival)
 ns.add_task(distribution_distances)
-ns.add_task(all)
+ns.add_task(run_all)
 ns.add_task(compare_descriptive)
 ns.add_task(compare_learning_curves)
-ns.add_task(compare_scene_performance)
+ns.add_task(compare_pattern_performance)
 ns.add_task(compare_pattern_difficulty)
 ns.add_task(compare_clustering)
 ns.add_task(compare_summary)

@@ -38,11 +38,16 @@ def load_config(path: str | os.PathLike | None = None) -> dict:
         return yaml.safe_load(f)
 
 
-def cache_dir(cfg: dict, task_name: str) -> Path:
-    """`<repo>/<paths.cache>/<task_name>/` — creates the parent on demand."""
-    base = REPO_ROOT / cfg["paths"]["cache"] / task_name
+def output_dir(cfg: dict, task_name: str) -> Path:
+    """`<repo>/<paths.output>/<task_name>/` — creates the parent on demand."""
+    base = REPO_ROOT / cfg["paths"]["output"] / task_name
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def cache_dir(cfg: dict, task_name: str) -> Path:
+    """Deprecated alias for `output_dir`. Kept for backwards compatibility."""
+    return output_dir(cfg, task_name)
 
 
 def logs_dir(cfg: dict) -> Path:
@@ -180,3 +185,41 @@ def strip_bids_prefix(values: list[str] | None, prefix: str) -> list[str] | None
     if not values:
         return None
     return [v[len(prefix):] if v.startswith(prefix) else v for v in values]
+
+
+STAGES = ["early_discovery", "late_discovery", "early_practice", "late_practice"]
+
+
+def add_stage_column(clips: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of `clips` with a `Stage` column ∈ {early|late}_{discovery|practice}.
+
+    Within each (Subject, Phase) the split is at the per-group median ClipCode
+    — every subject gets their own boundary (per [[feedback-no-subject-averaging]]).
+    """
+    out = clips.copy()
+    out["Stage"] = pd.Series(dtype="object", index=out.index)
+    codes = clips["ClipCode"].astype("int64")
+    for (_subject, phase), idx in clips.groupby(["Subject", "Phase"]).indices.items():
+        sub_codes = codes.iloc[idx]
+        median = sub_codes.median()
+        labels = [
+            f"early_{phase}" if c <= median else f"late_{phase}"
+            for c in sub_codes
+        ]
+        out.iloc[idx, out.columns.get_loc("Stage")] = labels
+    return out
+
+
+def attach_patterns(clips: pd.DataFrame) -> pd.DataFrame:
+    """Long-form (one row per clip × pattern flag = 1) join of clips with scene patterns.
+
+    The 27 scene-pattern columns from the Zenodo annotations are melted, only
+    rows where the pattern is present are kept, and the result is joined to
+    `clips` on `SceneID`. Use this whenever a per-pattern aggregation is
+    needed (per [[feedback-patterns-over-scenes]]).
+    """
+    patterns = scene_pattern_matrix().reset_index().melt(
+        id_vars="scene_id", var_name="pattern", value_name="present"
+    )
+    patterns = patterns[patterns["present"] == 1].drop(columns="present")
+    return clips.merge(patterns, left_on="SceneID", right_on="scene_id", how="inner").drop(columns="scene_id")

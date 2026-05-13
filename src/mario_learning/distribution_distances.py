@@ -6,6 +6,11 @@ Two modes:
   compute the 1-D Wasserstein distance between distributions of that variable
   across two groups within the dataset. Groups are defined by the
   ``grouping`` config option:
+  - ``stage``      → 4-stage split per subject (early/late × discovery/practice)
+    — pairwise EMD across all (Subject, Stage) combinations. **Recommended**
+    (see [[feedback-four-stage-split]]).
+  - ``subject_stage`` → like ``stage`` but only stages within a subject are
+    paired — keeps cross-subject pairs out (per [[feedback-no-subject-averaging]]).
   - ``phase``      → discovery vs practice (subjects pooled)
   - ``subject``    → all pairwise subject distances
   - ``early_late`` → first half vs second half by ClipCode (per subject)
@@ -62,10 +67,11 @@ def run(
     if len(groups) < 2:
         log.warning("distribution_distances: only %d group(s) for grouping=%s; skipping pairwise computation",
                     len(groups), grouping)
+    within_subject = grouping == "subject_stage"
 
-    scalar_rows = _scalar_pairs(clips, groups, variables)
+    scalar_rows = _scalar_pairs(clips, groups, variables, within_subject=within_subject)
     scene_rows, ground_metric_used = _scene_space_pairs(
-        clips, groups, ground_metric_cfg, umap_coords_path
+        clips, groups, ground_metric_cfg, umap_coords_path, within_subject=within_subject,
     )
 
     scalar_path = out_dir / "scalar.csv"
@@ -94,6 +100,12 @@ def _make_groups(clips: pd.DataFrame, grouping: str) -> dict[str, pd.DataFrame]:
             groups[f"sub-{subject}_early"] = sub_df.iloc[:mid]
             groups[f"sub-{subject}_late"] = sub_df.iloc[mid:]
         return groups
+    if grouping in ("stage", "subject_stage"):
+        staged = utils.add_stage_column(clips)
+        groups = {}
+        for (subject, stage), g in staged.groupby(["Subject", "Stage"], observed=True):
+            groups[f"sub-{subject}_{stage}"] = g
+        return groups
     if grouping == "dataset":
         return {clips["dataset"].iloc[0]: clips}
     raise ValueError(f"Unknown grouping: {grouping}")
@@ -103,6 +115,8 @@ def _scalar_pairs(
     clips: pd.DataFrame,
     groups: dict[str, pd.DataFrame],
     variables: list[str],
+    *,
+    within_subject: bool = False,
 ) -> list[dict]:
     rows: list[dict] = []
     for var in variables:
@@ -110,6 +124,8 @@ def _scalar_pairs(
             log.warning("scalar: variable %s not in clips DataFrame", var)
             continue
         for a, b in combinations(groups, 2):
+            if within_subject and not _same_subject(a, b):
+                continue
             va = pd.to_numeric(groups[a][var], errors="coerce").dropna()
             vb = pd.to_numeric(groups[b][var], errors="coerce").dropna()
             if va.empty or vb.empty:
@@ -125,16 +141,30 @@ def _scalar_pairs(
     return rows
 
 
+def _same_subject(a: str, b: str) -> bool:
+    return _subject_key(a) == _subject_key(b)
+
+
+def _subject_key(label: str) -> str | None:
+    if label.startswith("sub-"):
+        return label.split("_", 1)[0]
+    return None
+
+
 def _scene_space_pairs(
     clips: pd.DataFrame,
     groups: dict[str, pd.DataFrame],
     ground_metric_cfg: str,
     umap_coords_path: Path | None,
+    *,
+    within_subject: bool = False,
 ) -> tuple[list[dict], str]:
     cost, scene_index, ground_metric_used = _scene_cost_matrix(ground_metric_cfg, umap_coords_path)
     rows: list[dict] = []
     failure_vectors = {name: _failure_vector(g, scene_index) for name, g in groups.items()}
     for a, b in combinations(groups, 2):
+        if within_subject and not _same_subject(a, b):
+            continue
         fa = failure_vectors[a]
         fb = failure_vectors[b]
         if fa.sum() == 0 or fb.sum() == 0:
