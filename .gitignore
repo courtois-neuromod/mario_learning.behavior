@@ -1,3 +1,13 @@
 sourcedata/
 outputdata/
 env/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# config and runtime artifacts (per .AGENTS.md)
+config.yaml
+data/
+logs/

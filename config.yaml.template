@@ -1,0 +1,61 @@
+# mario_learning.behavior — analysis config
+#
+# Copy to config.yaml and fill in the <PLACEHOLDER> values. setup.sh does
+# this interactively.
+
+datasets:
+  # Each entry maps a short name → root of a mario.scenes-formatted dataset
+  # (BIDS-style: sub-XX/ses-XXX/gamelogs/*.bk2 + *_summary.json + *_variables.json).
+  humans:
+    path: <PLACEHOLDER_MARIO_SCENES_PATH>
+  # Example agent-produced dataset (same layout).
+  # agent_ppo:
+  #   path: <PLACEHOLDER_AGENT_DATASET_PATH>
+
+paths:
+  cache: data/processed
+  logs: logs
+
+slurm:
+  username: <PLACEHOLDER_SLURM_USER>
+  defaults:
+    mem: 8G
+    time: "01:00:00"
+    cpus: 2
+
+analysis:
+  learning_curves:
+    smoothing_window: 10
+    variables: [Cleared, X_Traveled, Hits_taken, Duration]
+  pattern_difficulty:
+    phases: [discovery, practice]
+    early_late_split: median
+  clustering:
+    umap:
+      n_neighbors: 15
+      min_dist: 0.1
+      metric: hamming
+      random_state: 42
+    k_values: [5, 10, 15, 20, 25, 30]
+  traces:
+    # Path to level/scene background PNGs. Use mario.scenes/sourcedata/ —
+    # agent-produced datasets do not include the backgrounds.
+    background_source: <PLACEHOLDER_MARIO_SCENES_PATH>/sourcedata
+    interpolation: linear
+    clip_limit: 200    # Limit per (subject, level) to keep figures legible. null disables.
+  survival:
+    event: death
+    censor_at: clip_end
+    min_attempts_per_scene: 3
+  distribution_distances:
+    scalar_variables: [Duration, X_Traveled, Hits_taken]
+    scene_space:
+      ground_metric: umap
+      jaccard_source: mario.scenes_annotations
+    grouping: phase
+  figure:
+    dpi: 150
+    palette: tab10
+
+seeds:
+  default: 42
