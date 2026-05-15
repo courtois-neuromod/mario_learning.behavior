@@ -16,6 +16,7 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -193,20 +194,19 @@ STAGES = ["early_discovery", "late_discovery", "early_practice", "late_practice"
 def add_stage_column(clips: pd.DataFrame) -> pd.DataFrame:
     """Return a copy of `clips` with a `Stage` column ∈ {early|late}_{discovery|practice}.
 
-    Within each (Subject, Phase) the split is at the per-group median ClipCode
-    — every subject gets their own boundary (per [[feedback-no-subject-averaging]]).
+    Within each (Subject, Phase, Level) the split is at the per-group median
+    ClipCode using strict ``<`` (the median itself goes to *late*). The split
+    is per-level so that every (pattern, phase) cell sees both early and late
+    representation — without it, a level played entirely at the start of
+    discovery would put all its clips in early_discovery, leaving late_discovery
+    empty for the patterns it contains (e.g. 4-Horde, Enemy stair valley).
     """
     out = clips.copy()
     out["Stage"] = pd.Series(dtype="object", index=out.index)
     codes = clips["ClipCode"].astype("int64")
-    for (_subject, phase), idx in clips.groupby(["Subject", "Phase"]).indices.items():
-        sub_codes = codes.iloc[idx]
-        median = sub_codes.median()
-        labels = [
-            f"early_{phase}" if c <= median else f"late_{phase}"
-            for c in sub_codes
-        ]
-        out.iloc[idx, out.columns.get_loc("Stage")] = labels
+    median = codes.groupby([clips["Subject"], clips["Phase"], clips["Level"]]).transform("median")
+    early = codes < median
+    out["Stage"] = np.where(early, "early_", "late_") + clips["Phase"].astype(str)
     return out
 
 
