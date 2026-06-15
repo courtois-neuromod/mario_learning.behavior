@@ -106,6 +106,25 @@ def load_variables(
 # Internal builders
 # ---------------------------------------------------------------------------
 
+def _clip_relpath(item: dict, gamelogs_reldir: Path, suffix: str = "_summary.json") -> str:
+    """Reconstruct the per-clip filename from summary metadata fields.
+
+    Used when loading a consolidated (array) summary file to recover the
+    per-clip path needed to locate companion ``_variables.json`` files.
+    Returns an empty string when any required field is missing.
+    """
+    sub      = item.get("Subject", "")
+    ses      = item.get("Session", "")
+    level    = item.get("Level", "")
+    scene_id = item.get("SceneID", "")
+    clip     = item.get("ClipCode", "")
+    if not (sub and ses and level and scene_id and clip):
+        return ""
+    scene_num = scene_id[len(level) + 1:]  # "w1l1s0" → "0"
+    stem = f"sub-{sub}_ses-{ses}_task-mario_level-{level}_scene-{scene_num}_clip-{clip}"
+    return str(gamelogs_reldir / f"{stem}{suffix}")
+
+
 def _build_dataframe(summary_paths: list[Path], dataset_name: str) -> pd.DataFrame:
     rows = []
     relative_root = _common_root(summary_paths)
@@ -116,9 +135,18 @@ def _build_dataframe(summary_paths: list[Path], dataset_name: str) -> pd.DataFra
         except (OSError, json.JSONDecodeError) as e:
             log.warning("Skipping %s: %s", sp, e)
             continue
-        row = {col: payload.get(col) for col in SUMMARY_COLUMNS}
-        row["summary_path"] = str(sp.relative_to(relative_root)) if relative_root else str(sp)
-        rows.append(row)
+
+        is_consolidated = isinstance(payload, list)
+        items = payload if is_consolidated else [payload]
+        sp_reldir = sp.parent.relative_to(relative_root) if relative_root else sp.parent
+
+        for item in items:
+            row = {col: item.get(col) for col in SUMMARY_COLUMNS}
+            if is_consolidated:
+                row["summary_path"] = _clip_relpath(item, sp_reldir)
+            else:
+                row["summary_path"] = str(sp.relative_to(relative_root)) if relative_root else str(sp)
+            rows.append(row)
 
     df = pd.DataFrame(rows, columns=SUMMARY_COLUMNS + ["summary_path"])
     df["Cleared"] = (df["Outcome"] == "completed").astype("int8")

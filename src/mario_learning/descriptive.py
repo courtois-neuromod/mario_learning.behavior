@@ -172,13 +172,16 @@ def _qc_figure(
 
     ax = axes[2]
     phase = tables["phases"]
-    pivot = phase.pivot(index="Subject", columns="Phase", values="completion_rate").fillna(0)
-    pivot.plot(kind="bar", ax=ax, colormap="viridis", legend=True)
+    if phase.empty:
+        ax.text(0.5, 0.5, "No phase data", ha="center", va="center", transform=ax.transAxes)
+    else:
+        pivot = phase.pivot(index="Subject", columns="Phase", values="completion_rate").fillna(0)
+        pivot.plot(kind="bar", ax=ax, colormap="viridis", legend=True)
+        ax.set_ylim(0, 1)
+        ax.tick_params(axis="x", rotation=45)
     ax.set_title("Completion by phase")
     ax.set_xlabel("Subject")
     ax.set_ylabel("Completion rate")
-    ax.set_ylim(0, 1)
-    ax.tick_params(axis="x", rotation=45)
 
     n = len(clips)
     fig.suptitle(f"{clips['dataset'].iloc[0]} — {n} clips, {clips['Subject'].nunique()} subjects")

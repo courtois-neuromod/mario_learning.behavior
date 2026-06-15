@@ -163,15 +163,21 @@ def list_summary_jsons(
     subjects: list[str] | None = None,
     sessions: list[str] | None = None,
 ) -> list[Path]:
-    """Enumerate clip ``*_summary.json`` paths under a mario.scenes-formatted root.
+    """Enumerate ``*_summary.json`` paths under a mario.scenes-formatted root.
 
+    Finds both per-clip files (``sub-*/ses-*/gamelogs/*_summary.json``) and
+    consolidated per-session files (``sub-*/ses-*/*_summary.json``).
     Filters by ``sub`` and ``ses`` BIDS entities parsed from each filename.
     Run-level filtering is applied at the DataFrame level by the loader because
-    clip ``*_summary.json`` filenames carry ``level`` and ``scene`` entities
+    ``*_summary.json`` filenames carry ``level`` and ``scene`` entities
     rather than ``run`` — the run number lives only inside the JSON payload.
     """
     files: list[Path] = []
-    for summary in sorted(dataset_path.glob("sub-*/ses-*/gamelogs/*_summary.json")):
+    all_summaries = sorted(
+        set(dataset_path.glob("sub-*/ses-*/gamelogs/*_summary.json"))
+        | set(dataset_path.glob("sub-*/ses-*/*_summary.json"))
+    )
+    for summary in all_summaries:
         ents = parse_bids_entities(summary)
         if subjects and f"sub-{ents.get('sub')}" not in subjects:
             continue
