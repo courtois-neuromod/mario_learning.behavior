@@ -1,4 +1,4 @@
-"""Per-pattern clear rates across the 4-stage discovery/practice split.
+"""Per-pattern clear rates across the 6-stage discovery/practice split.
 
 For each (Subject, Pattern, Stage) computes:
 
@@ -7,9 +7,9 @@ For each (Subject, Pattern, Stage) computes:
 - a stage-pair learning metric: (late_practice − early_discovery) per pattern
 
 Per [[feedback-no-subject-averaging]], every metric is reported per subject.
-Per [[feedback-four-stage-split]], stage ∈ {early_discovery, late_discovery,
-early_practice, late_practice}. Per [[feedback-patterns-over-scenes]], pattern
-is the analytical unit.
+Stage ∈ {early_discovery, middle_discovery, late_discovery,
+early_practice, middle_practice, late_practice}. Per [[feedback-patterns-over-scenes]],
+pattern is the analytical unit.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def run(
     provenance.write_sidecar(pooled_path, parameters=parameters, inputs=inputs)
     paths["figure_pooled"] = pooled_path
 
-    log.info("pattern_difficulty: %d patterns × %d subjects, 4 stages",
+    log.info("pattern_difficulty: %d patterns × %d subjects, 6 stages",
              metrics["pattern"].nunique(), metrics["Subject"].nunique())
     return paths
 
@@ -72,7 +72,7 @@ def _compute_metrics(long_df: pd.DataFrame) -> pd.DataFrame:
     """Per (Subject, Pattern, Stage): n, clear rate, duration, hits.
 
     Pivots to a wide-form row per (Subject, Pattern) so each row records all
-    four stages, plus an `improvement = late_practice − early_discovery` column.
+    six stages, plus an `improvement = late_practice − early_discovery` column.
     """
     g = long_df.groupby(["Subject", "pattern", "Stage"], observed=True)
     long = pd.DataFrame({
@@ -100,7 +100,7 @@ def _compute_metrics(long_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _figure_pooled_by_stage(long_df: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
-    """Top panel of the canonical 'cleared_by_pattern' figure: humans pooled, 4 viridis bars per pattern."""
+    """Top panel of the canonical 'cleared_by_pattern' figure: humans pooled, 6 viridis bars per pattern."""
     style = plots.style(cfg)
     grouped = (
         long_df.groupby(["pattern", "Stage"], observed=True)["Cleared"].mean().reset_index()
@@ -139,7 +139,7 @@ def _figure_subject(sub_df: pd.DataFrame, subject: str, out_path: Path, *, cfg: 
     for k, stage in enumerate(utils.STAGES):
         ax.barh(y + k * height, sub_df[stage].fillna(0).to_numpy(), height,
                 color=stage_colors[stage], label=stage)
-    ax.set_yticks(y + height * 1.5)
+    ax.set_yticks(y + height * 2.5)
     ax.set_yticklabels(patterns, fontsize=8)
     ax.set_xlim(0, 1)
     ax.set_xlabel("Clear rate")

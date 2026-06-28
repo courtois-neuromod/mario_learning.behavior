@@ -21,6 +21,7 @@ from mario_learning import plots, provenance, utils
 log = logging.getLogger(__name__)
 
 VARIABLES = ["Cleared", "Duration", "Hits_taken"]
+VARIABLE_DIRECTION = {"Cleared": "up", "Duration": "down", "Hits_taken": "down"}
 
 
 def run(
@@ -72,13 +73,14 @@ def _figure_for_subject(subject: str, sub_df: pd.DataFrame, out_path: Path, *, c
     n_vars = len(VARIABLES)
     fig, axes = plt.subplots(
         n_vars, 1,
-        figsize=(max(8, 0.35 * n_pat + 2), 2.5 * n_vars),
+        figsize=(max(10, 0.55 * n_pat + 2), 2.5 * n_vars),
         sharex=True, squeeze=False,
     )
     palette = plt.get_cmap("viridis")
     stage_colors = {s: palette(i / (len(utils.STAGES) - 1)) for i, s in enumerate(utils.STAGES)}
-    width = 0.2
-    x = np.arange(n_pat)
+    width = 0.13
+    group_spacing = 1.4  # gap between pattern groups: 1.4 - 6*0.13 = 0.62
+    x = np.arange(n_pat) * group_spacing
     for i, var in enumerate(VARIABLES):
         ax = axes[i][0]
         for k, stage in enumerate(utils.STAGES):
@@ -86,11 +88,13 @@ def _figure_for_subject(subject: str, sub_df: pd.DataFrame, out_path: Path, *, c
             ax.bar(x + k * width, sub[var].fillna(0).to_numpy(), width,
                    color=stage_colors[stage], label=stage if i == 0 else None)
         ax.set_ylabel(var)
+        plots.add_direction_arrow(ax, VARIABLE_DIRECTION[var])
         ax.grid(axis="y", alpha=0.3)
-        if i == 0:
-            ax.legend(fontsize=7, ncol=4, loc="best")
-    axes[-1][0].set_xticks(x + width * 1.5)
+    axes[-1][0].set_xticks(x + width * 2.5)
     axes[-1][0].set_xticklabels(patterns, rotation=45, ha="right", fontsize=8)
-    fig.suptitle(f"sub-{subject} — performance by pattern × stage")
-    fig.tight_layout()
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.0),
+               ncol=len(utils.STAGES), fontsize=7, frameon=True)
+    fig.suptitle(f"sub-{subject} — performance by pattern × stage", y=1.04)
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
     plots.save_figure(fig, out_path, dpi=style["dpi"])

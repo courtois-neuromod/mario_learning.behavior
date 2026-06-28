@@ -194,25 +194,28 @@ def strip_bids_prefix(values: list[str] | None, prefix: str) -> list[str] | None
     return [v[len(prefix):] if v.startswith(prefix) else v for v in values]
 
 
-STAGES = ["early_discovery", "late_discovery", "early_practice", "late_practice"]
+STAGES = [
+    "early_discovery", "middle_discovery", "late_discovery",
+    "early_practice", "middle_practice", "late_practice",
+]
 
 
 def add_stage_column(clips: pd.DataFrame) -> pd.DataFrame:
-    """Return a copy of `clips` with a `Stage` column ∈ {early|late}_{discovery|practice}.
+    """Return a copy of `clips` with a `Stage` column (early/middle/late × discovery/practice).
 
-    Within each (Subject, Phase, Level) the split is at the per-group median
-    ClipCode using strict ``<`` (the median itself goes to *late*). The split
-    is per-level so that every (pattern, phase) cell sees both early and late
-    representation — without it, a level played entirely at the start of
-    discovery would put all its clips in early_discovery, leaving late_discovery
-    empty for the patterns it contains (e.g. 4-Horde, Enemy stair valley).
+    Within each (Subject, Phase, Level) clips are split into tertiles by
+    ClipCode: bottom third → early, middle third → middle, top third → late.
+    The split is per-level so that every (pattern, phase) cell sees all three
+    stages — without it, a level played entirely at the start of discovery
+    would have no late clips for the patterns it contains.
     """
     out = clips.copy()
-    out["Stage"] = pd.Series(dtype="object", index=out.index)
     codes = clips["ClipCode"].astype("int64")
-    median = codes.groupby([clips["Subject"], clips["Phase"], clips["Level"]]).transform("median")
-    early = codes < median
-    out["Stage"] = np.where(early, "early_", "late_") + clips["Phase"].astype(str)
+    group_keys = [clips["Subject"], clips["Phase"], clips["Level"]]
+    q33 = codes.groupby(group_keys).transform(lambda x: x.quantile(1 / 3))
+    q67 = codes.groupby(group_keys).transform(lambda x: x.quantile(2 / 3))
+    tertile = np.where(codes < q33, "early_", np.where(codes < q67, "middle_", "late_"))
+    out["Stage"] = tertile + clips["Phase"].astype(str)
     return out
 
 

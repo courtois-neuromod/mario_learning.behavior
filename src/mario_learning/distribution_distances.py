@@ -6,9 +6,8 @@ Two modes:
   compute the 1-D Wasserstein distance between distributions of that variable
   across two groups within the dataset. Groups are defined by the
   ``grouping`` config option:
-  - ``stage``      → 4-stage split per subject (early/late × discovery/practice)
-    — pairwise EMD across all (Subject, Stage) combinations. **Recommended**
-    (see [[feedback-four-stage-split]]).
+  - ``stage``      → 6-stage split per subject (early/middle/late × discovery/practice)
+    — pairwise EMD across all (Subject, Stage) combinations. **Recommended**.
   - ``subject_stage`` → like ``stage`` but only stages within a subject are
     paired — keeps cross-subject pairs out (per [[feedback-no-subject-averaging]]).
   - ``phase``      → discovery vs practice (subjects pooled)

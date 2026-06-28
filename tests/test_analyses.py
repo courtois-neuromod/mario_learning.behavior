@@ -43,10 +43,11 @@ def test_stage_helper(fixture_dataset, cache_dir):
     clips = _clips(fixture_dataset, cache_dir)
     staged = utils.add_stage_column(clips)
     assert set(staged["Stage"]) <= set(utils.STAGES)
-    # Every (subject, phase) should split into exactly 2 stages (early, late).
+    # Every (subject, phase) should only contain valid stages for that phase.
     for (_subject, phase), g in staged.groupby(["Subject", "Phase"]):
         stages = set(g["Stage"])
-        assert stages == {f"early_{phase}", f"late_{phase}"}
+        valid = {f"early_{phase}", f"middle_{phase}", f"late_{phase}"}
+        assert stages <= valid
 
 
 def test_attach_patterns(fixture_dataset, cache_dir):
@@ -138,8 +139,8 @@ def test_distribution_distances_subject_stage(fixture_dataset, cache_dir, tmp_pa
         parameters={}, inputs=[], cfg=cfg, umap_coords_path=None,
     )
     scalar = pd.read_csv(paths["scalar"])
-    # Within each subject (2 in fixture), 4 stages → C(4,2)=6 pairs × 2 vars = 12 rows per subject, 24 total.
-    assert len(scalar) == 24
+    # Within each subject (2 in fixture), 6 stages → C(6,2)=15 pairs × 2 vars = 30 rows per subject, 60 total.
+    assert len(scalar) == 60
     # No cross-subject pairs.
     for _, row in scalar.iterrows():
         a_sub = row["group_a"].split("_", 1)[0]

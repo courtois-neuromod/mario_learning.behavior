@@ -166,16 +166,14 @@ def pattern_performance(datasets: dict[str, Path], out_dir: Path, *, parameters,
 def pattern_difficulty(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:
     """Compare pattern difficulty across datasets.
 
-    Emits three figures:
+    Emits:
 
-    - ``cleared_by_pattern_per_model.png`` — the canonical 2-panel "killer" figure.
-      Top: pooled-subjects clear rate per pattern × stage, viridis. Bottom:
-      pooled-subjects clear rate per pattern × dataset (humans, PPO, …), magma.
-      Both panels sorted alphabetically by pattern. Shared x-axis.
-    - ``cleared_by_pattern_pooled_by_stage.png`` — the top panel on its own
-      (useful even with a single dataset).
-    - ``improvement_by_pattern_per_subject.png`` — per-subject improvement
-      diagnostic (line per dataset, panel per subject).
+    - ``cleared_by_pattern_per_model.png`` — 3-panel figure: pooled stage bars,
+      dataset comparison, and humans-vs-agent stage bars combined.
+    - ``cleared_by_pattern_pooled_by_stage.png`` — pooled stage panel on its own.
+    - ``improvement_by_pattern_per_subject.png`` — per-subject improvement lines.
+    - ``per_subject/sub-XX_stage_by_dataset.png`` — one figure per subject showing
+      humans (hatched) vs agent (solid) stage bars side by side.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -222,7 +220,7 @@ def pattern_difficulty(datasets: dict[str, Path], out_dir: Path, *, parameters, 
         for k, ds in enumerate(datasets_l):
             sub = merged[(merged["Subject"] == subject) & (merged["dataset"] == ds)].set_index("pattern").reindex(patterns)
             ax.plot(patterns, sub["improvement"], marker="o", color=palette(k % 10), label=ds)
-        ax.set_ylabel(f"sub-{subject}\nimprovement\n(late_prac − early_disc)")
+        ax.set_ylabel(f"sub-{subject}\nimprovement\n(late_practice − early_discovery)")
         ax.axhline(0, color="gray", lw=0.5)
         ax.grid(alpha=0.3)
         if i == 0:
@@ -234,7 +232,73 @@ def pattern_difficulty(datasets: dict[str, Path], out_dir: Path, *, parameters, 
     plots.save_figure(fig, fig_path, dpi=style["dpi"])
     provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
     paths["figure_improvement"] = fig_path
+
+    # ---- per-subject stage comparison ----
+    sub_dir = out_dir / "per_subject"
+    sub_dir.mkdir(exist_ok=True)
+    for subject in subjects:
+        sub_long = long_stage[long_stage["Subject"] == subject]
+        sub_id = str(subject).zfill(2)
+        fig_path = sub_dir / f"sub-{sub_id}_stage_by_dataset.png"
+        _figure_stage_per_subject(sub_long, sub_id, fig_path, cfg=cfg)
+        provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
+        paths[f"figure_sub-{sub_id}_stage"] = fig_path
+
     return paths
+
+
+def _figure_stage_per_subject(long_stage: pd.DataFrame, subject: str, out_path: Path, *, cfg: dict) -> None:
+    """Humans (hatched) vs agent (solid) stage bars for one subject."""
+    from matplotlib.patches import Patch
+
+    style = plots.style(cfg)
+    datasets_order = sorted(long_stage["dataset"].unique())
+    patterns = sorted(long_stage["pattern"].unique())
+    hatches = {datasets_order[0]: "///", datasets_order[1]: ""}
+
+    palette = plt.get_cmap("viridis")
+    stage_colors = {s: palette(i / (len(utils.STAGES) - 1)) for i, s in enumerate(utils.STAGES)}
+
+    n_pat = len(patterns)
+    n_stages = len(utils.STAGES)
+    width = 0.35
+    dataset_gap = 0.25
+    group_width = n_stages * width + dataset_gap
+    x = np.arange(n_pat) * (group_width * 2 + 0.5)
+
+    fig, ax = plt.subplots(figsize=(max(20, n_pat * 1.1), 6))
+
+    for d_idx, ds in enumerate(datasets_order):
+        g = (long_stage[long_stage["dataset"] == ds]
+             .groupby(["pattern", "Stage"], observed=True)["Cleared"]
+             .mean().reset_index())
+        offset = d_idx * (n_stages * width + dataset_gap)
+        for k, stage in enumerate(utils.STAGES):
+            vals = (g[g["Stage"] == stage].set_index("pattern")
+                    .reindex(patterns)["Cleared"].fillna(0).to_numpy())
+            ax.bar(x + offset + k * width, vals, width,
+                   color=stage_colors[stage], hatch=hatches[ds],
+                   edgecolor="white" if hatches[ds] == "" else "gray")
+
+    legend_handles = [
+        Patch(facecolor=stage_colors[stage], hatch=hatches[ds],
+              edgecolor="gray" if hatches[ds] else "white",
+              label=f"{ds} — {stage}")
+        for ds in datasets_order
+        for stage in utils.STAGES
+    ]
+    tick_center = (group_width - width) / 2 + (n_stages * width + dataset_gap) / 2
+    ax.set_xticks(x + tick_center)
+    ax.set_xticklabels(patterns, rotation=60, ha="right", fontsize=8)
+    ax.set_ylim(0, 1.05)
+    ax.set_xlabel("Pattern")
+    ax.set_ylabel("Cleared")
+    ax.set_title(f"sub-{subject} — humans vs agent by stage  (hatched = humans, solid = agent)", fontsize=11)
+    ax.set_axisbelow(True)
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(handles=legend_handles, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7)
+    fig.tight_layout()
+    plots.save_figure(fig, out_path, dpi=style["dpi"])
 
 
 def _melt_stage_metrics(merged: pd.DataFrame) -> pd.DataFrame:
@@ -262,39 +326,83 @@ def _pool_clips_by_dataset(datasets: dict[str, Path], cfg: dict) -> pd.DataFrame
 
 
 def _figure_killer(long_stage: pd.DataFrame, long_model: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
+    import matplotlib.gridspec as gridspec
+
     style = plots.style(cfg)
     patterns = sorted(set(long_stage["pattern"]).union(long_model["pattern"]))
-    fig, axes = plt.subplots(2, 1, figsize=(16, 6), sharex=True)
+    datasets_order = sorted(long_stage["dataset"].unique())
 
+    fig, axes = plt.subplots(3, 1, figsize=(18, 11), sharex=False)
+    ax0, ax1, ax2 = axes
+
+    # Panel 1: stage breakdown pooled across datasets
     stage_grouped = long_stage.groupby(["pattern", "Stage"], observed=True)["Cleared"].mean().reset_index()
-    sns.barplot(
-        data=stage_grouped, x="pattern", y="Cleared", hue="Stage",
-        order=patterns, hue_order=utils.STAGES,
-        palette="viridis", ax=axes[0],
-    )
-    axes[0].set_ylim(0, 1.05)
-    axes[0].set_xlabel("")
-    axes[0].set_ylabel("Cleared")
-    axes[0].set_title("Pooled subjects — by stage", fontsize=10)
-    axes[0].set_axisbelow(True)
-    axes[0].grid(axis="y", alpha=0.3)
-    axes[0].legend(title="Stage", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
+    sns.barplot(data=stage_grouped, x="pattern", y="Cleared", hue="Stage",
+                order=patterns, hue_order=utils.STAGES, palette="viridis", ax=ax0)
+    ax0.set_ylim(0, 1.05)
+    ax0.set_xlabel("")
+    ax0.set_ylabel("Cleared")
+    ax0.set_title("Pooled subjects & datasets — by stage", fontsize=10)
+    ax0.set_axisbelow(True)
+    ax0.grid(axis="y", alpha=0.3)
+    ax0.tick_params(axis="x", labelrotation=60, labelsize=8)
+    ax0.legend(title="Stage", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
 
+    # Panel 2: dataset comparison pooled across stages
     model_grouped = long_model.groupby(["pattern", "dataset"])["Cleared"].mean().reset_index()
-    datasets_order = sorted(model_grouped["dataset"].unique())
-    sns.barplot(
-        data=model_grouped, x="pattern", y="Cleared", hue="dataset",
-        order=patterns, hue_order=datasets_order,
-        palette="magma", ax=axes[1],
-    )
-    axes[1].set_ylim(0, 1.05)
-    axes[1].set_xlabel("Pattern")
-    axes[1].set_ylabel("Cleared")
-    axes[1].set_title("Pooled subjects — by model/dataset", fontsize=10)
-    axes[1].set_axisbelow(True)
-    axes[1].grid(axis="y", alpha=0.3)
-    axes[1].legend(title="Model", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
-    axes[1].tick_params(axis="x", labelrotation=60, labelsize=9)
+    sns.barplot(data=model_grouped, x="pattern", y="Cleared", hue="dataset",
+                order=patterns, hue_order=datasets_order, palette="magma", ax=ax1)
+    ax1.set_ylim(0, 1.05)
+    ax1.set_xlabel("")
+    ax1.set_ylabel("Cleared")
+    ax1.set_title("Pooled subjects — by dataset", fontsize=10)
+    ax1.set_axisbelow(True)
+    ax1.grid(axis="y", alpha=0.3)
+    ax1.tick_params(axis="x", labelrotation=60, labelsize=8)
+    ax1.legend(title="Dataset", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
+
+    # Panel 3: both datasets together, stage bars side by side per pattern
+    # humans = solid bars, agent = hatched bars, both colored by stage (viridis)
+    palette = plt.get_cmap("viridis")
+    stage_colors = {s: palette(i / (len(utils.STAGES) - 1)) for i, s in enumerate(utils.STAGES)}
+    n_pat = len(patterns)
+    n_stages = len(utils.STAGES)
+    width = 0.13
+    dataset_gap = 0.15  # extra gap between the two dataset groups
+    group_width = n_stages * width + dataset_gap
+    x = np.arange(n_pat) * (group_width * 2 + 0.3)
+
+    hatches = {datasets_order[0]: "", datasets_order[1]: "///"}
+    for d_idx, ds in enumerate(datasets_order):
+        sub = long_stage[long_stage["dataset"] == ds]
+        g = sub.groupby(["pattern", "Stage"], observed=True)["Cleared"].mean().reset_index()
+        offset = d_idx * (n_stages * width + dataset_gap)
+        for k, stage in enumerate(utils.STAGES):
+            vals = (g[g["Stage"] == stage].set_index("pattern")
+                    .reindex(patterns)["Cleared"].fillna(0).to_numpy())
+            ax2.bar(x + offset + k * width, vals, width,
+                    color=stage_colors[stage], hatch=hatches[ds],
+                    edgecolor="white" if hatches[ds] == "" else "gray")
+
+    from matplotlib.patches import Patch
+    legend_handles = [
+        Patch(facecolor=stage_colors[stage], hatch=hatches[ds],
+              edgecolor="gray" if hatches[ds] else "white",
+              label=f"{ds} — {stage}")
+        for ds in datasets_order
+        for stage in utils.STAGES
+    ]
+    tick_center = (group_width - width) / 2 + (n_stages * width + dataset_gap) / 2
+    ax2.set_xticks(x + tick_center)
+    ax2.set_xticklabels(patterns, rotation=60, ha="right", fontsize=8)
+    ax2.set_ylim(0, 1.05)
+    ax2.set_xlabel("Pattern")
+    ax2.set_ylabel("Cleared")
+    ax2.set_title("Humans vs agent — by stage (solid = humans, hatched = agent)", fontsize=10)
+    ax2.set_axisbelow(True)
+    ax2.grid(axis="y", alpha=0.3)
+    ax2.legend(handles=legend_handles, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7)
+
     fig.tight_layout()
     plots.save_figure(fig, out_path, dpi=max(style["dpi"], 200))
 
