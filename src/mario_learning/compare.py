@@ -34,6 +34,19 @@ def assert_inputs_exist(paths: dict[str, Path], task_name: str) -> None:
         )
 
 
+def _dataset_colors(datasets_sorted: list[str], n_per_dataset: int = 1) -> dict[str, list]:
+    """Return colors: first dataset (humans) → viridis, second (model) → magma."""
+    cmaps = [plt.get_cmap("viridis"), plt.get_cmap("magma")]
+    result = {}
+    for i, name in enumerate(datasets_sorted):
+        cmap = cmaps[min(i, len(cmaps) - 1)]
+        if n_per_dataset == 1:
+            result[name] = [cmap(0.6)]
+        else:
+            result[name] = [cmap(j / max(n_per_dataset - 1, 1)) for j in range(n_per_dataset)]
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Per-task implementations
 # ---------------------------------------------------------------------------
@@ -57,7 +70,8 @@ def descriptive(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs,
     style = plots.style(cfg)
     fig, ax = plt.subplots(figsize=(8, 5))
     pivot = merged.pivot_table(index="Subject", columns="dataset", values="completion_rate", aggfunc="mean")
-    pivot.plot(kind="bar", ax=ax, colormap="tab10")
+    ds_colors = _dataset_colors(sorted(merged["dataset"].unique()))
+    pivot.plot(kind="bar", ax=ax, color=[ds_colors[d][0] for d in pivot.columns])
     ax.set_title("Completion rate per subject, by dataset")
     ax.set_ylabel("Completion rate")
     ax.set_ylim(0, 1)
@@ -99,17 +113,17 @@ def _plot_overlay_grid(merged, group_col, groups, variables, out_path, *, cfg) -
     fig, axes = plt.subplots(len(variables), len(groups),
                               figsize=(2.3 * len(groups), 2.2 * len(variables)),
                               sharex="col", squeeze=False)
-    palette = plt.get_cmap("tab10")
     datasets = sorted(merged["dataset"].unique())
+    ds_colors = _dataset_colors(datasets)
     for j, group in enumerate(groups):
         for i, var in enumerate(variables):
             ax = axes[i][j]
-            for k, name in enumerate(datasets):
+            for name in datasets:
                 sub = merged[(merged[group_col] == group) & (merged["dataset"] == name)]
                 if sub.empty:
                     continue
                 sub = sub.groupby("clip_index", as_index=False)[f"{var}_smoothed"].mean()
-                ax.plot(sub["clip_index"], sub[f"{var}_smoothed"], color=palette(k % 10), label=name, lw=1.3)
+                ax.plot(sub["clip_index"], sub[f"{var}_smoothed"], color=ds_colors[name][0], label=name, lw=1.3)
             if i == 0:
                 ax.set_title(str(group), fontsize=7, rotation=0)
             if j == 0:
@@ -139,16 +153,17 @@ def pattern_performance(datasets: dict[str, Path], out_dir: Path, *, parameters,
     provenance.write_sidecar(csv_path, parameters=parameters, inputs=inputs)
 
     style = plots.style(cfg)
-    palette = plt.get_cmap("tab10")
+    datasets_order = sorted(merged["dataset"].unique())
+    ds_colors = _dataset_colors(datasets_order)
     subjects = sorted(merged["Subject"].unique())
     fig, axes = plt.subplots(len(subjects), 1, figsize=(12, 2.4 * len(subjects)), squeeze=False, sharex=True)
     for i, subject in enumerate(subjects):
         ax = axes[i][0]
         sub = merged[merged["Subject"] == subject]
         patterns = sorted(sub["pattern"].unique())
-        for k, ds in enumerate(sorted(sub["dataset"].unique())):
+        for ds in datasets_order:
             row = sub[sub["dataset"] == ds].set_index("pattern").reindex(patterns)
-            ax.plot(patterns, row["Cleared"], marker="o", color=palette(k % 10), label=ds)
+            ax.plot(patterns, row["Cleared"], marker="o", color=ds_colors[ds][0], label=ds)
         ax.set_ylim(0, 1.05)
         ax.set_ylabel(f"sub-{subject}\nCleared")
         ax.grid(alpha=0.3)
@@ -209,17 +224,17 @@ def pattern_difficulty(datasets: dict[str, Path], out_dir: Path, *, parameters, 
     paths["figure_pooled"] = pooled_path
 
     # ---- per-subject improvement diagnostic ----
-    palette = plt.get_cmap("tab10")
     subjects = sorted(merged["Subject"].unique())
     patterns = sorted(merged["pattern"].unique())
     datasets_l = sorted(merged["dataset"].unique())
+    ds_colors = _dataset_colors(datasets_l)
     fig, axes = plt.subplots(len(subjects), 1, figsize=(12, max(3, 0.4 * len(patterns)) + 1.5 * len(subjects)),
                               squeeze=False, sharex=True)
     for i, subject in enumerate(subjects):
         ax = axes[i][0]
-        for k, ds in enumerate(datasets_l):
+        for ds in datasets_l:
             sub = merged[(merged["Subject"] == subject) & (merged["dataset"] == ds)].set_index("pattern").reindex(patterns)
-            ax.plot(patterns, sub["improvement"], marker="o", color=palette(k % 10), label=ds)
+            ax.plot(patterns, sub["improvement"], marker="o", color=ds_colors[ds][0], label=ds)
         ax.set_ylabel(f"sub-{subject}\nimprovement\n(late_practice − early_discovery)")
         ax.axhline(0, color="gray", lw=0.5)
         ax.grid(alpha=0.3)
@@ -244,59 +259,55 @@ def pattern_difficulty(datasets: dict[str, Path], out_dir: Path, *, parameters, 
         provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
         paths[f"figure_sub-{sub_id}_stage"] = fig_path
 
+    # ---- per-pattern subject comparison lines ----
+    pat_dir = out_dir / "per_pattern"
+    pat_dir.mkdir(exist_ok=True)
+    pat_paths = _figure_per_pattern_lines(long_stage, pat_dir, cfg=cfg)
+    for key, fig_path in pat_paths.items():
+        provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
+    paths.update(pat_paths)
+
     return paths
 
 
 def _figure_stage_per_subject(long_stage: pd.DataFrame, subject: str, out_path: Path, *, cfg: dict) -> None:
-    """Humans (hatched) vs agent (solid) stage bars for one subject."""
-    from matplotlib.patches import Patch
-
+    """Stage trajectory lines for one subject: solid = humans (viridis), dashed = agent (magma)."""
     style = plots.style(cfg)
     datasets_order = sorted(long_stage["dataset"].unique())
     patterns = sorted(long_stage["pattern"].unique())
-    hatches = {datasets_order[0]: "///", datasets_order[1]: ""}
+    x_labels = utils.STAGES
+    x_pos = np.arange(len(x_labels))
 
-    palette = plt.get_cmap("viridis")
-    stage_colors = {s: palette(i / (len(utils.STAGES) - 1)) for i, s in enumerate(utils.STAGES)}
+    viridis = plt.get_cmap("viridis")
+    magma = plt.get_cmap("magma")
+    cmaps = [viridis, magma]
+    linestyles = ["-", "--"]
 
     n_pat = len(patterns)
-    n_stages = len(utils.STAGES)
-    width = 0.35
-    dataset_gap = 0.25
-    group_width = n_stages * width + dataset_gap
-    x = np.arange(n_pat) * (group_width * 2 + 0.5)
-
-    fig, ax = plt.subplots(figsize=(max(20, n_pat * 1.1), 6))
+    fig, ax = plt.subplots(figsize=(10, 5))
 
     for d_idx, ds in enumerate(datasets_order):
-        g = (long_stage[long_stage["dataset"] == ds]
-             .groupby(["pattern", "Stage"], observed=True)["Cleared"]
-             .mean().reset_index())
-        offset = d_idx * (n_stages * width + dataset_gap)
-        for k, stage in enumerate(utils.STAGES):
-            vals = (g[g["Stage"] == stage].set_index("pattern")
-                    .reindex(patterns)["Cleared"].fillna(0).to_numpy())
-            ax.bar(x + offset + k * width, vals, width,
-                   color=stage_colors[stage], hatch=hatches[ds],
-                   edgecolor="white" if hatches[ds] == "" else "gray")
+        cmap = cmaps[min(d_idx, 1)]
+        ls = linestyles[min(d_idx, 1)]
+        sub = long_stage[long_stage["dataset"] == ds]
+        for p_idx, pattern in enumerate(patterns):
+            vals = (sub[sub["pattern"] == pattern]
+                    .groupby("Stage", observed=True)["Cleared"]
+                    .mean().reindex(x_labels))
+            color = cmap(p_idx / max(n_pat - 1, 1))
+            label = f"{ds} — {pattern}" if d_idx == 0 else None
+            ax.plot(x_pos, vals.values, marker="o", color=color, linestyle=ls, lw=1.2,
+                    label=label, alpha=0.8)
 
-    legend_handles = [
-        Patch(facecolor=stage_colors[stage], hatch=hatches[ds],
-              edgecolor="gray" if hatches[ds] else "white",
-              label=f"{ds} — {stage}")
-        for ds in datasets_order
-        for stage in utils.STAGES
-    ]
-    tick_center = (group_width - width) / 2 + (n_stages * width + dataset_gap) / 2
-    ax.set_xticks(x + tick_center)
-    ax.set_xticklabels(patterns, rotation=60, ha="right", fontsize=8)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(x_labels, rotation=30, ha="right", fontsize=8)
     ax.set_ylim(0, 1.05)
-    ax.set_xlabel("Pattern")
+    ax.set_xlabel("Stage")
     ax.set_ylabel("Cleared")
-    ax.set_title(f"sub-{subject} — humans vs agent by stage  (hatched = humans, solid = agent)", fontsize=11)
+    ax.set_title(f"sub-{subject} — stage trajectory (solid = humans, dashed = agent)", fontsize=11)
     ax.set_axisbelow(True)
     ax.grid(axis="y", alpha=0.3)
-    ax.legend(handles=legend_handles, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7)
+    ax.legend(bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7)
     fig.tight_layout()
     plots.save_figure(fig, out_path, dpi=style["dpi"])
 
@@ -349,9 +360,11 @@ def _figure_killer(long_stage: pd.DataFrame, long_model: pd.DataFrame, out_path:
     ax0.legend(title="Stage", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
 
     # Panel 2: dataset comparison pooled across stages
+    ds_colors = _dataset_colors(datasets_order)
     model_grouped = long_model.groupby(["pattern", "dataset"])["Cleared"].mean().reset_index()
+    palette_list = [ds_colors[ds][0] for ds in datasets_order]
     sns.barplot(data=model_grouped, x="pattern", y="Cleared", hue="dataset",
-                order=patterns, hue_order=datasets_order, palette="magma", ax=ax1)
+                order=patterns, hue_order=datasets_order, palette=palette_list, ax=ax1)
     ax1.set_ylim(0, 1.05)
     ax1.set_xlabel("")
     ax1.set_ylabel("Cleared")
@@ -361,47 +374,26 @@ def _figure_killer(long_stage: pd.DataFrame, long_model: pd.DataFrame, out_path:
     ax1.tick_params(axis="x", labelrotation=60, labelsize=8)
     ax1.legend(title="Dataset", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
 
-    # Panel 3: both datasets together, stage bars side by side per pattern
-    # humans = solid bars, agent = hatched bars, both colored by stage (viridis)
-    palette = plt.get_cmap("viridis")
-    stage_colors = {s: palette(i / (len(utils.STAGES) - 1)) for i, s in enumerate(utils.STAGES)}
-    n_pat = len(patterns)
-    n_stages = len(utils.STAGES)
-    width = 0.13
-    dataset_gap = 0.15  # extra gap between the two dataset groups
-    group_width = n_stages * width + dataset_gap
-    x = np.arange(n_pat) * (group_width * 2 + 0.3)
-
-    hatches = {datasets_order[0]: "", datasets_order[1]: "///"}
-    for d_idx, ds in enumerate(datasets_order):
+    # Panel 3: humans vs agent — stage trajectory, pooled subjects (mean ± SEM)
+    x_labels = utils.STAGES
+    x_pos = np.arange(len(x_labels))
+    for ds in datasets_order:
         sub = long_stage[long_stage["dataset"] == ds]
-        g = sub.groupby(["pattern", "Stage"], observed=True)["Cleared"].mean().reset_index()
-        offset = d_idx * (n_stages * width + dataset_gap)
-        for k, stage in enumerate(utils.STAGES):
-            vals = (g[g["Stage"] == stage].set_index("pattern")
-                    .reindex(patterns)["Cleared"].fillna(0).to_numpy())
-            ax2.bar(x + offset + k * width, vals, width,
-                    color=stage_colors[stage], hatch=hatches[ds],
-                    edgecolor="white" if hatches[ds] == "" else "gray")
-
-    from matplotlib.patches import Patch
-    legend_handles = [
-        Patch(facecolor=stage_colors[stage], hatch=hatches[ds],
-              edgecolor="gray" if hatches[ds] else "white",
-              label=f"{ds} — {stage}")
-        for ds in datasets_order
-        for stage in utils.STAGES
-    ]
-    tick_center = (group_width - width) / 2 + (n_stages * width + dataset_gap) / 2
-    ax2.set_xticks(x + tick_center)
-    ax2.set_xticklabels(patterns, rotation=60, ha="right", fontsize=8)
+        grouped = sub.groupby("Stage", observed=True)["Cleared"].agg(["mean", "sem"]).reindex(x_labels)
+        ax2.plot(x_pos, grouped["mean"], marker="o", color=ds_colors[ds][0], label=ds, lw=1.5)
+        ax2.fill_between(x_pos,
+                         grouped["mean"] - grouped["sem"],
+                         grouped["mean"] + grouped["sem"],
+                         color=ds_colors[ds][0], alpha=0.2)
+    ax2.set_xticks(x_pos)
+    ax2.set_xticklabels(x_labels, rotation=30, ha="right", fontsize=8)
     ax2.set_ylim(0, 1.05)
-    ax2.set_xlabel("Pattern")
+    ax2.set_xlabel("Stage")
     ax2.set_ylabel("Cleared")
-    ax2.set_title("Humans vs agent — by stage (solid = humans, hatched = agent)", fontsize=10)
+    ax2.set_title("Humans vs agent — stage trajectory (pooled subjects, mean ± SEM)", fontsize=10)
     ax2.set_axisbelow(True)
     ax2.grid(axis="y", alpha=0.3)
-    ax2.legend(handles=legend_handles, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7)
+    ax2.legend(bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
 
     fig.tight_layout()
     plots.save_figure(fig, out_path, dpi=max(style["dpi"], 200))
@@ -428,6 +420,69 @@ def _figure_stage_only(long_stage: pd.DataFrame, out_path: Path, *, cfg: dict) -
     plots.save_figure(fig, out_path, dpi=style["dpi"])
 
 
+def _figure_per_pattern_lines(long_stage: pd.DataFrame, out_dir: Path, *, cfg: dict) -> dict[str, Path]:
+    """One line-plot per pattern: x = 6 stages, lines = subject tracks.
+
+    Humans (viridis, solid) and agent curricula (magma, dashed) are colored
+    consistently per subject index so the two tracks for the same curriculum
+    share a similar hue position in their respective colormaps.
+    """
+    style = plots.style(cfg)
+    datasets_order = sorted(long_stage["dataset"].unique())
+    patterns = sorted(long_stage["pattern"].unique())
+    subjects = sorted(long_stage["Subject"].unique())
+    x_labels = utils.STAGES
+    x_pos = np.arange(len(x_labels))
+
+    viridis = plt.get_cmap("viridis")
+    magma = plt.get_cmap("magma")
+    cmaps = [viridis, magma]
+    linestyles = ["-", "--"]
+    n_sub = len(subjects)
+
+    paths: dict[str, Path] = {}
+    for pattern in patterns:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        pat_data = long_stage[long_stage["pattern"] == pattern]
+
+        legend_handles = []
+        for d_idx, ds in enumerate(datasets_order):
+            cmap = cmaps[min(d_idx, 1)]
+            ls = linestyles[min(d_idx, 1)]
+            ds_data = pat_data[pat_data["dataset"] == ds]
+            for s_idx, subject in enumerate(subjects):
+                color = cmap(s_idx / max(n_sub - 1, 1))
+                vals = (ds_data[ds_data["Subject"] == subject]
+                        .set_index("Stage")["Cleared"]
+                        .reindex(x_labels))
+                ax.plot(x_pos, vals.values, marker="o", color=color,
+                        linestyle=ls, lw=1.3, alpha=0.85)
+                legend_handles.append(
+                    plt.Line2D([0], [0], color=color, linestyle=ls, lw=1.5,
+                               marker="o", markersize=4,
+                               label=f"sub-{subject} ({ds})")
+                )
+
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(x_labels, rotation=30, ha="right", fontsize=8)
+        ax.set_ylim(0, 1.05)
+        ax.set_xlabel("Stage")
+        ax.set_ylabel("Cleared")
+        ax.set_title(f"{pattern} — subject tracks (solid = humans, dashed = agent)", fontsize=10)
+        ax.set_axisbelow(True)
+        ax.grid(axis="y", alpha=0.3)
+        ax.legend(handles=legend_handles, bbox_to_anchor=(1.01, 1), loc="upper left",
+                  fontsize=7, ncol=1)
+        fig.tight_layout()
+        safe_name = pattern.replace("/", "_").replace(" ", "_")
+        fig_path = out_dir / f"{safe_name}_subject_lines.png"
+        plots.save_figure(fig, fig_path, dpi=style["dpi"])
+        plt.close(fig)
+        paths[f"figure_pat_{safe_name}"] = fig_path
+
+    return paths
+
+
 def clustering(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:
     """Compare per-cluster clear rate across datasets at each configured k.
 
@@ -452,7 +507,8 @@ def clustering(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, 
 
     style = plots.style(cfg)
     k_values = sorted(merged["k"].unique())
-    palette = plt.get_cmap("tab10")
+    datasets_order = sorted(merged["dataset"].unique())
+    ds_colors = _dataset_colors(datasets_order)
     fig, axes = plt.subplots(len(k_values), 1, figsize=(10, 2.4 * len(k_values)), squeeze=False)
     for i, k in enumerate(k_values):
         ax = axes[i][0]
@@ -461,7 +517,7 @@ def clustering(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, 
             .groupby(["dataset", "cluster"], as_index=False)["clear_rate"].mean()
         )
         pivot = sub.pivot(index="cluster", columns="dataset", values="clear_rate")
-        pivot.plot(kind="bar", ax=ax, color=[palette(k_ % 10) for k_ in range(pivot.shape[1])],
+        pivot.plot(kind="bar", ax=ax, color=[ds_colors[d][0] for d in pivot.columns],
                    legend=(i == 0))
         ax.set_title(f"k={k}")
         ax.set_ylabel("clear rate")
@@ -538,7 +594,8 @@ def survival(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cf
     figs_dir = out_dir / "figures"
     figs_dir.mkdir(exist_ok=True)
     style = plots.style(cfg)
-    palette = plt.get_cmap("tab10")
+    datasets_order = sorted(merged_long["dataset"].unique())
+    ds_colors = _dataset_colors(datasets_order)
     coverage_rows: list[dict] = []
     patterns = sorted(merged_long["pattern"].unique())
     subjects = sorted(merged_long["Subject"].unique())
@@ -549,9 +606,9 @@ def survival(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cf
         for i, subject in enumerate(subjects):
             ax = axes[i // cols][i % cols]
             sub = merged_long[(merged_long["pattern"] == pattern) & (merged_long["Subject"] == subject)]
-            for k, ds in enumerate(sorted(sub["dataset"].unique())):
+            for ds in datasets_order:
                 ds_df = sub[sub["dataset"] == ds]
-                ax.step(ds_df["t"], ds_df["S"], where="post", color=palette(k % 10), label=ds, lw=1.2)
+                ax.step(ds_df["t"], ds_df["S"], where="post", color=ds_colors[ds][0], label=ds, lw=1.2)
             ax.set_title(f"sub-{subject}", fontsize=8)
             ax.set_ylim(0, 1.05)
             if i == 0:
