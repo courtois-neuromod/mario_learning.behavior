@@ -448,7 +448,7 @@ def _figure_all_patterns_grid(long_stage: pd.DataFrame, out_path: Path, *, cfg: 
         for ds in datasets_order
     }
 
-    nrows, ncols = 7, 4
+    nrows, ncols = 4, 7
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 2.5, nrows * 3.4), squeeze=False)
 
     for idx, pattern in enumerate(patterns):
@@ -475,6 +475,11 @@ def _figure_all_patterns_grid(long_stage: pd.DataFrame, out_path: Path, *, cfg: 
                         ax.plot(xi, yi, marker=marker, color=color, markersize=5,
                                 linestyle="none", markeredgecolor="white",
                                 markeredgewidth=0.3, zorder=2)
+            # average line across subjects
+            avg = (ds_data.groupby("Stage", observed=True)["Cleared"]
+                   .mean().reindex(utils.STAGES).values.astype(float))
+            ax.plot(x_pos, avg, color=cmap_by_ds[ds](0.6), lw=2.0,
+                    linestyle=ls, zorder=3)
 
         ax.set_title(pattern, fontsize=7, pad=2)
         ax.set_ylim(0, 1.05)
@@ -490,11 +495,18 @@ def _figure_all_patterns_grid(long_stage: pd.DataFrame, out_path: Path, *, cfg: 
     for idx in range(len(patterns), nrows * ncols):
         axes[idx // ncols][idx % ncols].axis("off")
 
-    # Legend: line styles (datasets) + marker shapes (subjects) + stage color swatches
+    # Legend: averages + individual line styles + marker shapes + stage color swatches
     legend_handles = []
     for ds in datasets_order:
         legend_handles.append(
-            Line2D([0], [0], color="gray", linestyle=ls_by_ds[ds], lw=1.2, label=ds)
+            Line2D([0], [0], color=cmap_by_ds[ds](0.6), linestyle=ls_by_ds[ds],
+                   lw=2.0, label=f"avg {ds}")
+        )
+    legend_handles.append(Line2D([0], [0], color="none", label=""))
+    for ds in datasets_order:
+        legend_handles.append(
+            Line2D([0], [0], color="gray", linestyle=ls_by_ds[ds], lw=1.0,
+                   label=f"subjects ({ds})")
         )
     legend_handles.append(Line2D([0], [0], color="none", label=""))  # spacer
     for s_idx, subj in enumerate(subjects):
@@ -520,6 +532,87 @@ def _figure_all_patterns_grid(long_stage: pd.DataFrame, out_path: Path, *, cfg: 
                  fontsize=9, y=1.002)
     fig.tight_layout()
     plots.save_figure(fig, out_path, dpi=style["dpi"])
+
+
+def _figure_per_pattern_lines(long_stage: pd.DataFrame, out_dir: Path, *, cfg: dict) -> dict[str, Path]:
+    """One figure per pattern using the same encoding as the grid (shape=subject, colour=stage)."""
+    from matplotlib.lines import Line2D
+
+    MARKERS = ["o", "^", "s", "D", "P", "*", "X"]
+    STAGE_ABBREV = ["E.Disc", "M.Disc", "L.Disc", "E.Prac", "M.Prac", "L.Prac"]
+
+    style = plots.style(cfg)
+    datasets_order = sorted(long_stage["dataset"].unique())
+    patterns = sorted(long_stage["pattern"].unique())
+    subjects = sorted(long_stage["Subject"].unique())
+    n_stages = len(utils.STAGES)
+    x_pos = np.arange(n_stages)
+
+    viridis = plt.get_cmap("viridis")
+    magma = plt.get_cmap("magma")
+    cmap_by_ds = {datasets_order[0]: magma, datasets_order[1]: viridis}
+    ls_by_ds = {datasets_order[0]: "--", datasets_order[1]: "-"}
+    stage_colors_by_ds = {
+        ds: [cmap_by_ds[ds](i / max(n_stages - 1, 1)) for i in range(n_stages)]
+        for ds in datasets_order
+    }
+
+    paths: dict[str, Path] = {}
+    for pattern in patterns:
+        fig, ax = plt.subplots(figsize=(5, 6))
+        pat_data = long_stage[long_stage["pattern"] == pattern]
+
+        for ds in datasets_order:
+            ds_data = pat_data[pat_data["dataset"] == ds]
+            stage_colors = stage_colors_by_ds[ds]
+            ls = ls_by_ds[ds]
+            for s_idx, subject in enumerate(subjects):
+                marker = MARKERS[s_idx % len(MARKERS)]
+                vals = (ds_data[ds_data["Subject"] == subject]
+                        .set_index("Stage")["Cleared"]
+                        .reindex(utils.STAGES).values.astype(float))
+                valid = ~np.isnan(vals)
+                if not valid.any():
+                    continue
+                ax.plot(x_pos[valid], vals[valid], color="gray", lw=0.6,
+                        alpha=0.35, linestyle=ls, zorder=1)
+                for xi, yi, color in zip(x_pos, vals, stage_colors):
+                    if not np.isnan(yi):
+                        ax.plot(xi, yi, marker=marker, color=color, markersize=6,
+                                linestyle="none", markeredgecolor="white",
+                                markeredgewidth=0.3, zorder=2)
+
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(STAGE_ABBREV, fontsize=7, rotation=30, ha="right")
+        ax.set_ylim(0, 1.05)
+        ax.set_yticks(np.arange(0, 1.1, 0.1))
+        ax.tick_params(axis="y", labelsize=7)
+        ax.set_ylabel("Cleared", fontsize=8)
+        ax.set_title(f"{pattern}", fontsize=9)
+        ax.grid(axis="y", alpha=0.3)
+        ax.set_axisbelow(True)
+
+        legend_handles = []
+        for ds in datasets_order:
+            legend_handles.append(
+                Line2D([0], [0], color="gray", linestyle=ls_by_ds[ds], lw=1.2, label=ds)
+            )
+        legend_handles.append(Line2D([0], [0], color="none", label=""))
+        for s_idx, subj in enumerate(subjects):
+            legend_handles.append(
+                Line2D([0], [0], marker=MARKERS[s_idx % len(MARKERS)], color="gray",
+                       linestyle="none", markersize=5, label=f"sub-{subj}")
+            )
+        ax.legend(handles=legend_handles, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7)
+
+        fig.tight_layout()
+        safe_name = pattern.replace("/", "_").replace(" ", "_")
+        fig_path = out_dir / f"{safe_name}_subject_lines.png"
+        plots.save_figure(fig, fig_path, dpi=style["dpi"])
+        plt.close(fig)
+        paths[f"figure_pat_{safe_name}"] = fig_path
+
+    return paths
 
 
 def clustering(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:
