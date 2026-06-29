@@ -259,13 +259,11 @@ def pattern_difficulty(datasets: dict[str, Path], out_dir: Path, *, parameters, 
         provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
         paths[f"figure_sub-{sub_id}_stage"] = fig_path
 
-    # ---- per-pattern subject comparison lines ----
-    pat_dir = out_dir / "per_pattern"
-    pat_dir.mkdir(exist_ok=True)
-    pat_paths = _figure_per_pattern_lines(long_stage, pat_dir, cfg=cfg)
-    for key, fig_path in pat_paths.items():
-        provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
-    paths.update(pat_paths)
+    # ---- all-patterns grid ----
+    grid_path = out_dir / "all_patterns_subject_tracks.png"
+    _figure_all_patterns_grid(long_stage, grid_path, cfg=cfg)
+    provenance.write_sidecar(grid_path, parameters=parameters, inputs=inputs)
+    paths["figure_all_patterns_grid"] = grid_path
 
     return paths
 
@@ -420,67 +418,108 @@ def _figure_stage_only(long_stage: pd.DataFrame, out_path: Path, *, cfg: dict) -
     plots.save_figure(fig, out_path, dpi=style["dpi"])
 
 
-def _figure_per_pattern_lines(long_stage: pd.DataFrame, out_dir: Path, *, cfg: dict) -> dict[str, Path]:
-    """One line-plot per pattern: x = 6 stages, lines = subject tracks.
+def _figure_all_patterns_grid(long_stage: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
+    """7×4 grid with one subplot per pattern.
 
-    Humans (viridis, solid) and agent curricula (magma, dashed) are colored
-    consistently per subject index so the two tracks for the same curriculum
-    share a similar hue position in their respective colormaps.
+    Encoding:
+    - Marker colour → training stage (viridis = humans, magma = agent)
+    - Marker shape  → subject identity
+    - Line style    → solid = humans, dashed = agent (thin grey connector)
     """
+    from matplotlib.lines import Line2D
+
+    MARKERS = ["o", "^", "s", "D", "P", "*", "X"]
+    STAGE_ABBREV = ["E.Disc", "M.Disc", "L.Disc", "E.Prac", "M.Prac", "L.Prac"]
+
     style = plots.style(cfg)
     datasets_order = sorted(long_stage["dataset"].unique())
     patterns = sorted(long_stage["pattern"].unique())
     subjects = sorted(long_stage["Subject"].unique())
-    x_labels = utils.STAGES
-    x_pos = np.arange(len(x_labels))
+    n_stages = len(utils.STAGES)
+    x_pos = np.arange(n_stages)
 
     viridis = plt.get_cmap("viridis")
     magma = plt.get_cmap("magma")
-    cmaps = [viridis, magma]
-    linestyles = ["-", "--"]
-    n_sub = len(subjects)
+    # alphabetical sort: agent_ppo_packnet < humans → index 0 = agent, index 1 = humans
+    cmap_by_ds = {datasets_order[0]: magma, datasets_order[1]: viridis}
+    ls_by_ds = {datasets_order[0]: "--", datasets_order[1]: "-"}
+    stage_colors_by_ds = {
+        ds: [cmap_by_ds[ds](i / max(n_stages - 1, 1)) for i in range(n_stages)]
+        for ds in datasets_order
+    }
 
-    paths: dict[str, Path] = {}
-    for pattern in patterns:
-        fig, ax = plt.subplots(figsize=(8, 4))
+    nrows, ncols = 7, 4
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 2.5, nrows * 3.4), squeeze=False)
+
+    for idx, pattern in enumerate(patterns):
+        row, col = idx // ncols, idx % ncols
+        ax = axes[row][col]
         pat_data = long_stage[long_stage["pattern"] == pattern]
 
-        legend_handles = []
-        for d_idx, ds in enumerate(datasets_order):
-            cmap = cmaps[min(d_idx, 1)]
-            ls = linestyles[min(d_idx, 1)]
+        for ds in datasets_order:
             ds_data = pat_data[pat_data["dataset"] == ds]
+            stage_colors = stage_colors_by_ds[ds]
+            ls = ls_by_ds[ds]
             for s_idx, subject in enumerate(subjects):
-                color = cmap(s_idx / max(n_sub - 1, 1))
+                marker = MARKERS[s_idx % len(MARKERS)]
                 vals = (ds_data[ds_data["Subject"] == subject]
                         .set_index("Stage")["Cleared"]
-                        .reindex(x_labels))
-                ax.plot(x_pos, vals.values, marker="o", color=color,
-                        linestyle=ls, lw=1.3, alpha=0.85)
-                legend_handles.append(
-                    plt.Line2D([0], [0], color=color, linestyle=ls, lw=1.5,
-                               marker="o", markersize=4,
-                               label=f"sub-{subject} ({ds})")
-                )
+                        .reindex(utils.STAGES).values.astype(float))
+                valid = ~np.isnan(vals)
+                if not valid.any():
+                    continue
+                ax.plot(x_pos[valid], vals[valid], color="gray", lw=0.6,
+                        alpha=0.35, linestyle=ls, zorder=1)
+                for xi, yi, color in zip(x_pos, vals, stage_colors):
+                    if not np.isnan(yi):
+                        ax.plot(xi, yi, marker=marker, color=color, markersize=5,
+                                linestyle="none", markeredgecolor="white",
+                                markeredgewidth=0.3, zorder=2)
 
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(x_labels, rotation=30, ha="right", fontsize=8)
+        ax.set_title(pattern, fontsize=7, pad=2)
         ax.set_ylim(0, 1.05)
-        ax.set_xlabel("Stage")
-        ax.set_ylabel("Cleared")
-        ax.set_title(f"{pattern} — subject tracks (solid = humans, dashed = agent)", fontsize=10)
-        ax.set_axisbelow(True)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(STAGE_ABBREV, fontsize=4.5, rotation=45, ha="right")
+        ax.set_yticks(np.arange(0, 1.1, 0.1))
+        ax.tick_params(axis="y", labelsize=5)
         ax.grid(axis="y", alpha=0.3)
-        ax.legend(handles=legend_handles, bbox_to_anchor=(1.01, 1), loc="upper left",
-                  fontsize=7, ncol=1)
-        fig.tight_layout()
-        safe_name = pattern.replace("/", "_").replace(" ", "_")
-        fig_path = out_dir / f"{safe_name}_subject_lines.png"
-        plots.save_figure(fig, fig_path, dpi=style["dpi"])
-        plt.close(fig)
-        paths[f"figure_pat_{safe_name}"] = fig_path
+        ax.set_axisbelow(True)
+        if col == 0:
+            ax.set_ylabel("Cleared", fontsize=6)
 
-    return paths
+    for idx in range(len(patterns), nrows * ncols):
+        axes[idx // ncols][idx % ncols].axis("off")
+
+    # Legend: line styles (datasets) + marker shapes (subjects) + stage color swatches
+    legend_handles = []
+    for ds in datasets_order:
+        legend_handles.append(
+            Line2D([0], [0], color="gray", linestyle=ls_by_ds[ds], lw=1.2, label=ds)
+        )
+    legend_handles.append(Line2D([0], [0], color="none", label=""))  # spacer
+    for s_idx, subj in enumerate(subjects):
+        legend_handles.append(
+            Line2D([0], [0], marker=MARKERS[s_idx % len(MARKERS)], color="gray",
+                   linestyle="none", markersize=5, label=f"sub-{subj}")
+        )
+    legend_handles.append(Line2D([0], [0], color="none", label=""))  # spacer
+    for stage_idx, abbrev in enumerate(STAGE_ABBREV):
+        legend_handles.append(
+            Line2D([0], [0], marker="s", color=viridis(stage_idx / max(n_stages - 1, 1)),
+                   linestyle="none", markersize=6, label=f"humans — {abbrev}")
+        )
+    for stage_idx, abbrev in enumerate(STAGE_ABBREV):
+        legend_handles.append(
+            Line2D([0], [0], marker="s", color=magma(stage_idx / max(n_stages - 1, 1)),
+                   linestyle="none", markersize=6, label=f"agent — {abbrev}")
+        )
+
+    fig.legend(handles=legend_handles, loc="lower center",
+               bbox_to_anchor=(0.5, -0.02), ncol=4, fontsize=6, framealpha=0.9)
+    fig.suptitle("Pattern difficulty — subject tracks  (shape = subject, colour = stage)",
+                 fontsize=9, y=1.002)
+    fig.tight_layout()
+    plots.save_figure(fig, out_path, dpi=style["dpi"])
 
 
 def clustering(datasets: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg) -> dict[str, Path]:
