@@ -8,9 +8,14 @@ datasets:
   # (BIDS-style: sub-XX/ses-XXX/gamelogs/*.bk2 + *_summary.json + *_variables.json).
   humans:
     path: <PLACEHOLDER_MARIO_SCENES_PATH>
-  # Example agent-produced dataset (same layout).
-  # agent_ppo:
-  #   path: <PLACEHOLDER_AGENT_DATASET_PATH>
+  # Group entry: auto-discovers every directory under `root` matching
+  # `pattern` and registers each as `agent_<suffix>` (dashes -> underscores),
+  # e.g. mario.scenes.ppo-packnet -> agent_ppo_packnet. No need to add one
+  # entry per agent variant — drop a new mario.scenes.<x> dir under root and
+  # it's picked up automatically.
+  # agent:
+  #   root: <PLACEHOLDER_AGENT_DATASETS_ROOT>
+  #   pattern: "mario.scenes.*"
 
 paths:
   output: output

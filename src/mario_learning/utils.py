@@ -28,6 +28,41 @@ DEFAULT_CONFIG_PATH = REPO_ROOT / "config.yaml"
 BIDS_ENTITY_RE = re.compile(r"(?P<key>[a-zA-Z]+)-(?P<value>[A-Za-z0-9]+)")
 
 
+def _expand_dataset_globs(datasets_cfg: dict) -> dict:
+    """Expand `root` + `pattern` dataset groups into one entry per matched directory.
+
+    A plain entry (`{"path": ...}`) passes through unchanged — that's how
+    `humans` stays a single hand-specified dataset. A group entry instead
+    globs `root` for directories matching `pattern` and derives one dataset
+    per match, named `<group>_<suffix>` where `<suffix>` is whatever comes
+    after the pattern's literal prefix (dashes become underscores). This lets
+    e.g. every `mario.scenes.ppo-*` variant under one directory be picked up
+    automatically instead of listed by hand.
+    """
+    expanded = {}
+    for name, entry in datasets_cfg.items():
+        if "path" in entry:
+            expanded[name] = entry
+            continue
+        root = Path(entry["root"]).expanduser()
+        pattern = entry["pattern"]
+        prefix = entry.get("name_prefix", f"{name}_")
+        base = pattern.split("*")[0]
+        matches = sorted(p for p in root.glob(pattern) if p.is_dir())
+        if not matches:
+            logger.warning(
+                "Dataset group '%s': no directories under %s matched pattern %r",
+                name, root, pattern,
+            )
+        for match_path in matches:
+            suffix = match_path.name[len(base):].lstrip(".").replace("-", "_")
+            key = f"{prefix}{suffix}"
+            if key in expanded:
+                raise ValueError(f"Dataset name collision: '{key}' derived twice (from {match_path})")
+            expanded[key] = {"path": str(match_path)}
+    return expanded
+
+
 def load_config(path: str | os.PathLike | None = None) -> dict:
     """Load `config.yaml` from the repo root (or a custom path)."""
     cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
@@ -36,7 +71,10 @@ def load_config(path: str | os.PathLike | None = None) -> dict:
             f"{cfg_path} not found. Run ./setup.sh or copy config.yaml.template."
         )
     with cfg_path.open() as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+    if "datasets" in cfg:
+        cfg["datasets"] = _expand_dataset_globs(cfg["datasets"])
+    return cfg
 
 
 def output_dir(cfg: dict, task_name: str) -> Path:
