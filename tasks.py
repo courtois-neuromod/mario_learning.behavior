@@ -395,10 +395,35 @@ def _resolve_compare_inputs(cfg, datasets_csv: str | None, task_name: str) -> tu
     return out, inputs
 
 
+def _compare_label(cfg: dict, names: list[str]) -> str:
+    """Fold the compared dataset names into one output-folder label naming the agent(s).
+
+    'humans' contributes nothing to the label; any name expanded from a
+    dataset group (e.g. 'agent_ppo_packnet' from the 'agent' group) drops the
+    group prefix so the label reads as just the agent variant
+    ('ppo_packnet'). Comparing multiple agents joins their labels with '+'.
+    Falls back to the literal (sorted, joined) dataset names if nothing but
+    'humans' was selected.
+    """
+    prefixes = [f"{group}_" for group in cfg.get("dataset_groups", {})]
+    labels = []
+    for name in sorted(names):
+        if name == "humans":
+            continue
+        stripped = name
+        for prefix in prefixes:
+            if name.startswith(prefix):
+                stripped = name[len(prefix):]
+                break
+        labels.append(stripped)
+    return "+".join(labels) if labels else "+".join(sorted(names))
+
+
 def _run_compare(c, task_name: str, datasets_csv, force, runner):
     cfg = utils.load_config()
     sources, inputs = _resolve_compare_inputs(cfg, datasets_csv, task_name)
-    out_dir = utils.output_dir(cfg, "compare") / task_name
+    label = _compare_label(cfg, list(sources))
+    out_dir = utils.output_dir(cfg, "compare") / label / task_name
     parameters = {"datasets": sorted(sources)}
     canary = out_dir / "_compare.json"
     if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):

@@ -34,6 +34,10 @@ def assert_inputs_exist(paths: dict[str, Path], task_name: str) -> None:
         )
 
 
+MARKERS = ["o", "^", "s", "D", "P", "*", "X"]
+STAGE_ABBREV = ["E.Disc", "M.Disc", "L.Disc", "E.Prac", "M.Prac", "L.Prac"]
+
+
 def _dataset_colors(datasets_sorted: list[str], n_per_dataset: int = 1) -> dict[str, list]:
     """Return colors: first dataset (humans) → viridis, second (model) → magma."""
     cmaps = [plt.get_cmap("viridis"), plt.get_cmap("magma")]
@@ -265,6 +269,12 @@ def pattern_difficulty(datasets: dict[str, Path], out_dir: Path, *, parameters, 
     provenance.write_sidecar(grid_path, parameters=parameters, inputs=inputs)
     paths["figure_all_patterns_grid"] = grid_path
 
+    # ---- all-patterns aggregate (single panel, pooled across patterns) ----
+    agg_path = out_dir / "all_patterns_aggregate.png"
+    _figure_all_patterns_aggregate(long_stage, agg_path, cfg=cfg)
+    provenance.write_sidecar(agg_path, parameters=parameters, inputs=inputs)
+    paths["figure_all_patterns_aggregate"] = agg_path
+
     return paths
 
 
@@ -418,84 +428,63 @@ def _figure_stage_only(long_stage: pd.DataFrame, out_path: Path, *, cfg: dict) -
     plots.save_figure(fig, out_path, dpi=style["dpi"])
 
 
-def _figure_all_patterns_grid(long_stage: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
-    """7×4 grid with one subplot per pattern.
+def _stage_track_style(datasets_order: list[str]) -> tuple[dict, dict, dict]:
+    """Shared colour/linestyle scheme for subject-stage-track figures.
 
-    Encoding:
-    - Marker colour → training stage (viridis = humans, magma = agent)
-    - Marker shape  → subject identity
-    - Line style    → solid = humans, dashed = agent (thin grey connector)
+    alphabetical sort: agent_ppo_packnet < humans → index 0 = agent, index 1 = humans
     """
-    from matplotlib.lines import Line2D
-
-    MARKERS = ["o", "^", "s", "D", "P", "*", "X"]
-    STAGE_ABBREV = ["E.Disc", "M.Disc", "L.Disc", "E.Prac", "M.Prac", "L.Prac"]
-
-    style = plots.style(cfg)
-    datasets_order = sorted(long_stage["dataset"].unique())
-    patterns = sorted(long_stage["pattern"].unique())
-    subjects = sorted(long_stage["Subject"].unique())
     n_stages = len(utils.STAGES)
-    x_pos = np.arange(n_stages)
-
     viridis = plt.get_cmap("viridis")
     magma = plt.get_cmap("magma")
-    # alphabetical sort: agent_ppo_packnet < humans → index 0 = agent, index 1 = humans
     cmap_by_ds = {datasets_order[0]: magma, datasets_order[1]: viridis}
     ls_by_ds = {datasets_order[0]: "--", datasets_order[1]: "-"}
     stage_colors_by_ds = {
         ds: [cmap_by_ds[ds](i / max(n_stages - 1, 1)) for i in range(n_stages)]
         for ds in datasets_order
     }
+    return cmap_by_ds, ls_by_ds, stage_colors_by_ds
 
-    nrows, ncols = 4, 7
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 2.5, nrows * 3.4), squeeze=False)
 
-    for idx, pattern in enumerate(patterns):
-        row, col = idx // ncols, idx % ncols
-        ax = axes[row][col]
-        pat_data = long_stage[long_stage["pattern"] == pattern]
+def _draw_subject_stage_panel(ax, data: pd.DataFrame, *, datasets_order: list[str], subjects: list,
+                               cmap_by_ds: dict, ls_by_ds: dict, stage_colors_by_ds: dict,
+                               x_pos: np.ndarray, marker_size: float = 5) -> None:
+    """Draw subject tracks (marker=subject, colour=stage) plus a bold per-dataset average line.
 
-        for ds in datasets_order:
-            ds_data = pat_data[pat_data["dataset"] == ds]
-            stage_colors = stage_colors_by_ds[ds]
-            ls = ls_by_ds[ds]
-            for s_idx, subject in enumerate(subjects):
-                marker = MARKERS[s_idx % len(MARKERS)]
-                vals = (ds_data[ds_data["Subject"] == subject]
-                        .set_index("Stage")["Cleared"]
-                        .reindex(utils.STAGES).values.astype(float))
-                valid = ~np.isnan(vals)
-                if not valid.any():
-                    continue
-                ax.plot(x_pos[valid], vals[valid], color="gray", lw=0.6,
-                        alpha=0.35, linestyle=ls, zorder=1)
-                for xi, yi, color in zip(x_pos, vals, stage_colors):
-                    if not np.isnan(yi):
-                        ax.plot(xi, yi, marker=marker, color=color, markersize=5,
-                                linestyle="none", markeredgecolor="white",
-                                markeredgewidth=0.3, zorder=2)
-            # average line across subjects
-            avg = (ds_data.groupby("Stage", observed=True)["Cleared"]
-                   .mean().reindex(utils.STAGES).values.astype(float))
-            ax.plot(x_pos, avg, color=cmap_by_ds[ds](0.6), lw=2.0,
-                    linestyle=ls, zorder=3)
+    ``data`` must carry columns dataset / Subject / Stage / Cleared, already
+    restricted to whatever slice (one pattern, or pooled across patterns) the
+    caller wants plotted in this single panel.
+    """
+    for ds in datasets_order:
+        ds_data = data[data["dataset"] == ds]
+        stage_colors = stage_colors_by_ds[ds]
+        ls = ls_by_ds[ds]
+        for s_idx, subject in enumerate(subjects):
+            marker = MARKERS[s_idx % len(MARKERS)]
+            vals = (ds_data[ds_data["Subject"] == subject]
+                    .set_index("Stage")["Cleared"]
+                    .reindex(utils.STAGES).values.astype(float))
+            valid = ~np.isnan(vals)
+            if not valid.any():
+                continue
+            ax.plot(x_pos[valid], vals[valid], color="gray", lw=0.6,
+                    alpha=0.35, linestyle=ls, zorder=1)
+            for xi, yi, color in zip(x_pos, vals, stage_colors):
+                if not np.isnan(yi):
+                    ax.plot(xi, yi, marker=marker, color=color, markersize=marker_size,
+                            linestyle="none", markeredgecolor="white",
+                            markeredgewidth=0.3, zorder=2)
+        # average line across subjects
+        avg = (ds_data.groupby("Stage", observed=True)["Cleared"]
+               .mean().reindex(utils.STAGES).values.astype(float))
+        ax.plot(x_pos, avg, color=cmap_by_ds[ds](0.6), lw=2.0,
+                linestyle=ls, zorder=3)
 
-        ax.set_title(pattern, fontsize=7, pad=2)
-        ax.set_ylim(0, 1.05)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(STAGE_ABBREV, fontsize=4.5, rotation=45, ha="right")
-        ax.set_yticks(np.arange(0, 1.1, 0.1))
-        ax.tick_params(axis="y", labelsize=5)
-        ax.grid(axis="y", alpha=0.3)
-        ax.set_axisbelow(True)
-        if col == 0:
-            ax.set_ylabel("Cleared", fontsize=6)
 
-    for idx in range(len(patterns), nrows * ncols):
-        axes[idx // ncols][idx % ncols].axis("off")
+def _subject_stage_legend_handles(datasets_order: list[str], subjects: list, cmap_by_ds: dict,
+                                   ls_by_ds: dict, viridis, magma) -> list:
+    from matplotlib.lines import Line2D
 
-    # Legend: averages + individual line styles + marker shapes + stage color swatches
+    n_stages = len(utils.STAGES)
     legend_handles = []
     for ds in datasets_order:
         legend_handles.append(
@@ -525,11 +514,106 @@ def _figure_all_patterns_grid(long_stage: pd.DataFrame, out_path: Path, *, cfg: 
             Line2D([0], [0], marker="s", color=magma(stage_idx / max(n_stages - 1, 1)),
                    linestyle="none", markersize=6, label=f"agent — {abbrev}")
         )
+    return legend_handles
+
+
+def _figure_all_patterns_grid(long_stage: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
+    """7×4 grid with one subplot per pattern.
+
+    Encoding:
+    - Marker colour → training stage (viridis = humans, magma = agent)
+    - Marker shape  → subject identity
+    - Line style    → solid = humans, dashed = agent (thin grey connector)
+    """
+    style = plots.style(cfg)
+    datasets_order = sorted(long_stage["dataset"].unique())
+    patterns = sorted(long_stage["pattern"].unique())
+    subjects = sorted(long_stage["Subject"].unique())
+    n_stages = len(utils.STAGES)
+    x_pos = np.arange(n_stages)
+
+    viridis = plt.get_cmap("viridis")
+    magma = plt.get_cmap("magma")
+    cmap_by_ds, ls_by_ds, stage_colors_by_ds = _stage_track_style(datasets_order)
+
+    nrows, ncols = 4, 7
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 2.5, nrows * 3.4), squeeze=False)
+
+    for idx, pattern in enumerate(patterns):
+        row, col = idx // ncols, idx % ncols
+        ax = axes[row][col]
+        pat_data = long_stage[long_stage["pattern"] == pattern]
+
+        _draw_subject_stage_panel(ax, pat_data, datasets_order=datasets_order, subjects=subjects,
+                                   cmap_by_ds=cmap_by_ds, ls_by_ds=ls_by_ds,
+                                   stage_colors_by_ds=stage_colors_by_ds, x_pos=x_pos)
+
+        ax.set_title(pattern, fontsize=7, pad=2)
+        ax.set_ylim(0, 1.05)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(STAGE_ABBREV, fontsize=4.5, rotation=45, ha="right")
+        ax.set_yticks(np.arange(0, 1.1, 0.1))
+        ax.tick_params(axis="y", labelsize=5)
+        ax.grid(axis="y", alpha=0.3)
+        ax.set_axisbelow(True)
+        if col == 0:
+            ax.set_ylabel("Cleared", fontsize=6)
+
+    for idx in range(len(patterns), nrows * ncols):
+        axes[idx // ncols][idx % ncols].axis("off")
+
+    # Legend: averages + individual line styles + marker shapes + stage color swatches
+    legend_handles = _subject_stage_legend_handles(datasets_order, subjects, cmap_by_ds, ls_by_ds, viridis, magma)
 
     fig.legend(handles=legend_handles, loc="lower center",
                bbox_to_anchor=(0.5, -0.02), ncol=4, fontsize=6, framealpha=0.9)
     fig.suptitle("Pattern difficulty — subject tracks  (shape = subject, colour = stage)",
                  fontsize=9, y=1.002)
+    fig.tight_layout()
+    plots.save_figure(fig, out_path, dpi=style["dpi"])
+
+
+def _figure_all_patterns_aggregate(long_stage: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
+    """Single-panel version of the all-patterns grid, pooled across patterns.
+
+    Same encoding as one cell of ``all_patterns_subject_tracks.png`` (marker
+    shape = subject, marker colour = stage, bold line = per-dataset average),
+    but each subject's per-stage value is averaged across *all* patterns first,
+    so the figure shows one aggregate humans line and one aggregate agent line
+    plus the individual subject tracks behind them.
+    """
+    style = plots.style(cfg)
+    datasets_order = sorted(long_stage["dataset"].unique())
+    subjects = sorted(long_stage["Subject"].unique())
+    n_stages = len(utils.STAGES)
+    x_pos = np.arange(n_stages)
+
+    viridis = plt.get_cmap("viridis")
+    magma = plt.get_cmap("magma")
+    cmap_by_ds, ls_by_ds, stage_colors_by_ds = _stage_track_style(datasets_order)
+
+    # Pool across patterns: mean Cleared per (dataset, Subject, Stage).
+    agg = long_stage.groupby(["dataset", "Subject", "Stage"], observed=True)["Cleared"].mean().reset_index()
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    _draw_subject_stage_panel(ax, agg, datasets_order=datasets_order, subjects=subjects,
+                               cmap_by_ds=cmap_by_ds, ls_by_ds=ls_by_ds,
+                               stage_colors_by_ds=stage_colors_by_ds, x_pos=x_pos, marker_size=7)
+
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(STAGE_ABBREV, fontsize=9, rotation=30, ha="right")
+    ax.set_ylim(0, 1.05)
+    ax.set_yticks(np.arange(0, 1.1, 0.1))
+    ax.tick_params(axis="y", labelsize=8)
+    ax.set_ylabel("Cleared", fontsize=10)
+    ax.set_xlabel("Stage")
+    ax.grid(axis="y", alpha=0.3)
+    ax.set_axisbelow(True)
+    ax.set_title("All patterns aggregated — subject tracks (shape = subject, colour = stage)", fontsize=11)
+
+    legend_handles = _subject_stage_legend_handles(datasets_order, subjects, cmap_by_ds, ls_by_ds, viridis, magma)
+    ax.legend(handles=legend_handles, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7)
+
     fig.tight_layout()
     plots.save_figure(fig, out_path, dpi=style["dpi"])
 
