@@ -28,7 +28,7 @@ DEFAULT_CONFIG_PATH = REPO_ROOT / "config.yaml"
 BIDS_ENTITY_RE = re.compile(r"(?P<key>[a-zA-Z]+)-(?P<value>[A-Za-z0-9]+)")
 
 
-def _expand_dataset_globs(datasets_cfg: dict) -> dict:
+def _expand_dataset_globs(datasets_cfg: dict) -> tuple[dict, dict]:
     """Expand `root` + `pattern` dataset groups into one entry per matched directory.
 
     A plain entry (`{"path": ...}`) passes through unchanged — that's how
@@ -38,8 +38,13 @@ def _expand_dataset_globs(datasets_cfg: dict) -> dict:
     after the pattern's literal prefix (dashes become underscores). This lets
     e.g. every `mario.scenes.ppo-*` variant under one directory be picked up
     automatically instead of listed by hand.
+
+    Returns `(expanded_datasets, groups)` where `groups` maps each original
+    group key (e.g. `"agent"`) to the list of dataset names it expanded to —
+    so `--dataset=agent` can later mean "every dataset in that group".
     """
     expanded = {}
+    groups = {}
     for name, entry in datasets_cfg.items():
         if "path" in entry:
             expanded[name] = entry
@@ -54,13 +59,16 @@ def _expand_dataset_globs(datasets_cfg: dict) -> dict:
                 "Dataset group '%s': no directories under %s matched pattern %r",
                 name, root, pattern,
             )
+        members = []
         for match_path in matches:
             suffix = match_path.name[len(base):].lstrip(".").replace("-", "_")
             key = f"{prefix}{suffix}"
             if key in expanded:
                 raise ValueError(f"Dataset name collision: '{key}' derived twice (from {match_path})")
             expanded[key] = {"path": str(match_path)}
-    return expanded
+            members.append(key)
+        groups[name] = members
+    return expanded, groups
 
 
 def load_config(path: str | os.PathLike | None = None) -> dict:
@@ -73,7 +81,7 @@ def load_config(path: str | os.PathLike | None = None) -> dict:
     with cfg_path.open() as f:
         cfg = yaml.safe_load(f)
     if "datasets" in cfg:
-        cfg["datasets"] = _expand_dataset_globs(cfg["datasets"])
+        cfg["datasets"], cfg["dataset_groups"] = _expand_dataset_globs(cfg["datasets"])
     return cfg
 
 

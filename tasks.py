@@ -1,11 +1,16 @@
 """Invoke entry points for mario_learning.behavior.
 
-Per-dataset tasks (e.g. `inv load`, `inv descriptive`) operate on a single
-configured dataset; comparison tasks (`inv compare-*`) overlay multiple.
+Per-dataset tasks (e.g. `inv load`, `inv descriptive`) run once per resolved
+dataset; comparison tasks (`inv compare-*`) overlay multiple in one figure.
 
-All tasks accept --dataset / --datasets selectors that resolve against
-config.yaml > datasets, plus --subject / --session / --run filters, --force
-to bypass cached outputs, and --slurm to dispatch on HPC.
+--dataset / --datasets accept a comma-separated list of literal dataset names
+(e.g. 'humans') and/or group aliases from a `root`+`pattern` config entry
+(e.g. 'agent' expands to every auto-discovered agent_* dataset) — so
+`inv load --dataset=agent` loads every agent variant in one command, the same
+way `inv load --dataset=humans` loads the human dataset.
+
+All tasks also accept --subject / --session / --run filters, --force to
+bypass cached outputs, and --slurm to dispatch on HPC.
 """
 
 from __future__ import annotations
@@ -44,10 +49,24 @@ def _resolve_dataset(cfg: dict, name: str) -> tuple[str, Path]:
 
 
 def _resolve_datasets(cfg: dict, names: str | None) -> list[tuple[str, Path]]:
+    """Resolve a comma-separated dataset/group selector to (name, path) pairs.
+
+    Each token may be a literal dataset name (e.g. 'humans') or a group alias
+    from a `root`+`pattern` config entry (e.g. 'agent'), which expands to
+    every dataset discovered in that group. `names=None` means every
+    configured dataset (all groups expanded, plus plain entries).
+    """
     if names is None:
         names_list = list(cfg["datasets"].keys())
     else:
-        names_list = [n.strip() for n in names.split(",") if n.strip()]
+        tokens = [n.strip() for n in names.split(",") if n.strip()]
+        names_list = []
+        seen = set()
+        for token in tokens:
+            for expanded_name in cfg.get("dataset_groups", {}).get(token, [token]):
+                if expanded_name not in seen:
+                    seen.add(expanded_name)
+                    names_list.append(expanded_name)
     return [_resolve_dataset(cfg, n) for n in names_list]
 
 
@@ -81,22 +100,22 @@ def _load_clips_for_task(cfg, name, path, subject, session, run, force):
 
 
 @task(help={
-    "dataset": "Dataset name from config.yaml > datasets.",
+    "dataset": "Dataset name or group alias from config.yaml > datasets (comma-separated for several).",
     "subject": "Comma-separated subjects (e.g. 'sub-01,sub-02'). Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
     "force": "Re-scan the dataset even if a cache exists.",
 })
 def load(c, dataset, subject=None, session=None, run=None, force=False):
-    """Build or refresh the clips parquet cache for DATASET."""
+    """Build or refresh the clips parquet cache for DATASET (or every dataset in a group alias)."""
     cfg = utils.load_config()
-    name, path = _resolve_dataset(cfg, dataset)
-    df, _, _ = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    log.info("Loaded %d clips for dataset %s", len(df), name)
+    for name, path in _resolve_datasets(cfg, dataset):
+        df, _, _ = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        log.info("Loaded %d clips for dataset %s", len(df), name)
 
 
 @task(help={
-    "dataset": "Dataset name from config.yaml > datasets.",
+    "dataset": "Dataset name or group alias from config.yaml > datasets (comma-separated for several).",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
@@ -107,21 +126,21 @@ def descriptive(c, dataset, subject=None, session=None, run=None, force=False):
     from mario_learning import descriptive as analysis
 
     cfg = utils.load_config()
-    name, path = _resolve_dataset(cfg, dataset)
-    df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    out_dir = utils.output_dir(cfg, "descriptive") / name
+    for name, path in _resolve_datasets(cfg, dataset):
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        out_dir = utils.output_dir(cfg, "descriptive") / name
 
-    canary = out_dir / "subjects.csv"
-    if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
-        log.info("descriptive %s: cache hit at %s", name, out_dir)
-        return
+        canary = out_dir / "subjects.csv"
+        if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
+            log.info("descriptive %s: cache hit at %s", name, out_dir)
+            continue
 
-    analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
-    log.info("descriptive %s -> %s", name, out_dir)
+        analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
+        log.info("descriptive %s -> %s", name, out_dir)
 
 
 @task(name="learning-curves", help={
-    "dataset": "Dataset name from config.yaml > datasets.",
+    "dataset": "Dataset name or group alias from config.yaml > datasets (comma-separated for several).",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
@@ -132,21 +151,21 @@ def learning_curves(c, dataset, subject=None, session=None, run=None, force=Fals
     from mario_learning import learning_curves as analysis
 
     cfg = utils.load_config()
-    name, path = _resolve_dataset(cfg, dataset)
-    df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    parameters = {**parameters, "smoothing_window": cfg["analysis"]["learning_curves"]["smoothing_window"]}
-    out_dir = utils.output_dir(cfg, "learning_curves") / name
+    for name, path in _resolve_datasets(cfg, dataset):
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        parameters = {**parameters, "smoothing_window": cfg["analysis"]["learning_curves"]["smoothing_window"]}
+        out_dir = utils.output_dir(cfg, "learning_curves") / name
 
-    canary = out_dir / "learning_curves.csv"
-    if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
-        log.info("learning-curves %s: cache hit at %s", name, out_dir)
-        return
-    analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
-    log.info("learning-curves %s -> %s", name, out_dir)
+        canary = out_dir / "learning_curves.csv"
+        if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
+            log.info("learning-curves %s: cache hit at %s", name, out_dir)
+            continue
+        analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
+        log.info("learning-curves %s -> %s", name, out_dir)
 
 
 @task(help={
-    "dataset": "Dataset name from config.yaml > datasets.",
+    "dataset": "Dataset name or group alias from config.yaml > datasets (comma-separated for several).",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
@@ -157,20 +176,20 @@ def summary(c, dataset, subject=None, session=None, run=None, force=False):
     from mario_learning import summary as analysis
 
     cfg = utils.load_config()
-    name, path = _resolve_dataset(cfg, dataset)
-    df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    out_dir = utils.output_dir(cfg, "summary") / name
+    for name, path in _resolve_datasets(cfg, dataset):
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        out_dir = utils.output_dir(cfg, "summary") / name
 
-    canary = out_dir / "per_level_per_scene.csv"
-    if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
-        log.info("summary %s: cache hit at %s", name, out_dir)
-        return
-    analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
-    log.info("summary %s -> %s", name, out_dir)
+        canary = out_dir / "per_level_per_scene.csv"
+        if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
+            log.info("summary %s: cache hit at %s", name, out_dir)
+            continue
+        analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
+        log.info("summary %s -> %s", name, out_dir)
 
 
 @task(name="pattern-performance", help={
-    "dataset": "Dataset name from config.yaml > datasets.",
+    "dataset": "Dataset name or group alias from config.yaml > datasets (comma-separated for several).",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
@@ -181,20 +200,20 @@ def pattern_performance(c, dataset, subject=None, session=None, run=None, force=
     from mario_learning import pattern_performance as analysis
 
     cfg = utils.load_config()
-    name, path = _resolve_dataset(cfg, dataset)
-    df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    out_dir = utils.output_dir(cfg, "pattern_performance") / name
+    for name, path in _resolve_datasets(cfg, dataset):
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        out_dir = utils.output_dir(cfg, "pattern_performance") / name
 
-    canary = out_dir / "per_subject_pattern.csv"
-    if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
-        log.info("pattern-performance %s: cache hit at %s", name, out_dir)
-        return
-    analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
-    log.info("pattern-performance %s -> %s", name, out_dir)
+        canary = out_dir / "per_subject_pattern.csv"
+        if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
+            log.info("pattern-performance %s: cache hit at %s", name, out_dir)
+            continue
+        analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
+        log.info("pattern-performance %s -> %s", name, out_dir)
 
 
 @task(name="pattern-difficulty", help={
-    "dataset": "Dataset name from config.yaml > datasets.",
+    "dataset": "Dataset name or group alias from config.yaml > datasets (comma-separated for several).",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
@@ -205,21 +224,21 @@ def pattern_difficulty(c, dataset, subject=None, session=None, run=None, force=F
     from mario_learning import pattern_difficulty as analysis
 
     cfg = utils.load_config()
-    name, path = _resolve_dataset(cfg, dataset)
-    df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    parameters = {**parameters, **cfg["analysis"]["pattern_difficulty"]}
-    out_dir = utils.output_dir(cfg, "pattern_difficulty") / name
+    for name, path in _resolve_datasets(cfg, dataset):
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        parameters = {**parameters, **cfg["analysis"]["pattern_difficulty"]}
+        out_dir = utils.output_dir(cfg, "pattern_difficulty") / name
 
-    canary = out_dir / "pattern_metrics.csv"
-    if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
-        log.info("pattern-difficulty %s: cache hit at %s", name, out_dir)
-        return
-    analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
-    log.info("pattern-difficulty %s -> %s", name, out_dir)
+        canary = out_dir / "pattern_metrics.csv"
+        if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
+            log.info("pattern-difficulty %s: cache hit at %s", name, out_dir)
+            continue
+        analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
+        log.info("pattern-difficulty %s -> %s", name, out_dir)
 
 
 @task(help={
-    "dataset": "Dataset name from config.yaml > datasets.",
+    "dataset": "Dataset name or group alias from config.yaml > datasets (comma-separated for several).",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
@@ -230,21 +249,21 @@ def clustering(c, dataset, subject=None, session=None, run=None, force=False):
     from mario_learning import clustering as analysis
 
     cfg = utils.load_config()
-    name, path = _resolve_dataset(cfg, dataset)
-    df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    parameters = {**parameters, **cfg["analysis"]["clustering"]}
-    out_dir = utils.output_dir(cfg, "clustering") / name
+    for name, path in _resolve_datasets(cfg, dataset):
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        parameters = {**parameters, **cfg["analysis"]["clustering"]}
+        out_dir = utils.output_dir(cfg, "clustering") / name
 
-    canary = out_dir / "scenes_clustered.csv"
-    if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
-        log.info("clustering %s: cache hit at %s", name, out_dir)
-        return
-    analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
-    log.info("clustering %s -> %s", name, out_dir)
+        canary = out_dir / "scenes_clustered.csv"
+        if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
+            log.info("clustering %s: cache hit at %s", name, out_dir)
+            continue
+        analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
+        log.info("clustering %s -> %s", name, out_dir)
 
 
 @task(help={
-    "dataset": "Dataset name from config.yaml > datasets.",
+    "dataset": "Dataset name or group alias from config.yaml > datasets (comma-separated for several).",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
@@ -255,24 +274,24 @@ def traces(c, dataset, subject=None, session=None, run=None, force=False):
     from mario_learning import traces as analysis
 
     cfg = utils.load_config()
-    name, path = _resolve_dataset(cfg, dataset)
-    df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    parameters = {**parameters, **cfg["analysis"]["traces"]}
-    out_dir = utils.output_dir(cfg, "traces") / name
+    for name, path in _resolve_datasets(cfg, dataset):
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        parameters = {**parameters, **cfg["analysis"]["traces"]}
+        out_dir = utils.output_dir(cfg, "traces") / name
 
-    # Use a per-(subject, level) canary file as the idempotency probe.
-    # Even one missing file per subject re-triggers the run; cheap enough.
-    canaries = [out_dir / f"sub-{s}" / "levels" / f"{lvl}.png"
-                for (s, lvl) in df[["Subject", "Level"]].drop_duplicates().itertuples(index=False)]
-    if not force and canaries and all(provenance.check_match(p, parameters=parameters, inputs=inputs) for p in canaries):
-        log.info("traces %s: cache hit at %s", name, out_dir)
-        return
-    analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg, dataset_path=path)
-    log.info("traces %s -> %s", name, out_dir)
+        # Use a per-(subject, level) canary file as the idempotency probe.
+        # Even one missing file per subject re-triggers the run; cheap enough.
+        canaries = [out_dir / f"sub-{s}" / "levels" / f"{lvl}.png"
+                    for (s, lvl) in df[["Subject", "Level"]].drop_duplicates().itertuples(index=False)]
+        if not force and canaries and all(provenance.check_match(p, parameters=parameters, inputs=inputs) for p in canaries):
+            log.info("traces %s: cache hit at %s", name, out_dir)
+            continue
+        analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg, dataset_path=path)
+        log.info("traces %s -> %s", name, out_dir)
 
 
 @task(help={
-    "dataset": "Dataset name from config.yaml > datasets.",
+    "dataset": "Dataset name or group alias from config.yaml > datasets (comma-separated for several).",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
@@ -283,21 +302,21 @@ def survival(c, dataset, subject=None, session=None, run=None, force=False):
     from mario_learning import survival as analysis
 
     cfg = utils.load_config()
-    name, path = _resolve_dataset(cfg, dataset)
-    df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    parameters = {**parameters, **cfg["analysis"]["survival"]}
-    out_dir = utils.output_dir(cfg, "survival") / name
+    for name, path in _resolve_datasets(cfg, dataset):
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        parameters = {**parameters, **cfg["analysis"]["survival"]}
+        out_dir = utils.output_dir(cfg, "survival") / name
 
-    canary = out_dir / "per_scene_summary.csv"
-    if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
-        log.info("survival %s: cache hit at %s", name, out_dir)
-        return
-    analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
-    log.info("survival %s -> %s", name, out_dir)
+        canary = out_dir / "per_scene_summary.csv"
+        if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
+            log.info("survival %s: cache hit at %s", name, out_dir)
+            continue
+        analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg)
+        log.info("survival %s -> %s", name, out_dir)
 
 
 @task(name="distribution-distances", help={
-    "dataset": "Dataset name from config.yaml > datasets.",
+    "dataset": "Dataset name or group alias from config.yaml > datasets (comma-separated for several).",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
@@ -308,25 +327,25 @@ def distribution_distances(c, dataset, subject=None, session=None, run=None, for
     from mario_learning import distribution_distances as analysis
 
     cfg = utils.load_config()
-    name, path = _resolve_dataset(cfg, dataset)
-    df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
-    parameters = {**parameters, **cfg["analysis"]["distribution_distances"]}
-    out_dir = utils.output_dir(cfg, "distribution_distances") / name
+    for name, path in _resolve_datasets(cfg, dataset):
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        parameters = {**parameters, **cfg["analysis"]["distribution_distances"]}
+        out_dir = utils.output_dir(cfg, "distribution_distances") / name
 
-    canary = out_dir / "scalar.csv"
-    if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
-        log.info("distribution-distances %s: cache hit at %s", name, out_dir)
-        return
+        canary = out_dir / "scalar.csv"
+        if not force and provenance.check_match(canary, parameters=parameters, inputs=inputs):
+            log.info("distribution-distances %s: cache hit at %s", name, out_dir)
+            continue
 
-    # Prefer the dataset's own clustering UMAP cache if present; else None → Jaccard fallback.
-    umap_coords = utils.output_dir(cfg, "clustering") / name / "umap_2d.csv"
-    umap_coords = umap_coords if umap_coords.exists() else None
-    analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg, umap_coords_path=umap_coords)
-    log.info("distribution-distances %s -> %s", name, out_dir)
+        # Prefer the dataset's own clustering UMAP cache if present; else None → Jaccard fallback.
+        umap_coords = utils.output_dir(cfg, "clustering") / name / "umap_2d.csv"
+        umap_coords = umap_coords if umap_coords.exists() else None
+        analysis.run(df, out_dir, parameters=parameters, inputs=inputs, cfg=cfg, umap_coords_path=umap_coords)
+        log.info("distribution-distances %s -> %s", name, out_dir)
 
 
 @task(name="run-all", help={
-    "dataset": "Dataset name from config.yaml > datasets.",
+    "dataset": "Dataset name or group alias from config.yaml > datasets (comma-separated for several).",
     "subject": "Comma-separated subjects. Default: all.",
     "session": "Comma-separated sessions. Default: all.",
     "run": "Comma-separated runs. Default: all.",
