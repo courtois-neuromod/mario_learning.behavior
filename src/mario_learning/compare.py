@@ -664,6 +664,34 @@ def _figure_all_patterns_aggregate(long_stage: pd.DataFrame, out_path: Path, *, 
     )
 
 
+def all_models_ranking_table(summary_sources: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg,
+                              variable: str, out_name: str) -> dict[str, Path]:
+    """Rank every model by avg/start/end of one metric, reading each dataset's `stage_summary.csv`.
+
+    `summary_sources` maps dataset name -> its `stage_difficulty` `stage_summary.csv`
+    path. Rows are the whole-dataset raw per-clip mean (not pattern-balanced),
+    sorted by `avg` descending.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    records = []
+    for name, csv_path in summary_sources.items():
+        df = pd.read_csv(csv_path)
+        row = df[df["variable"] == variable]
+        if row.empty:
+            continue
+        r = row.iloc[0]
+        records.append({"model": name, "avg": r["avg"], "start": r["start"], "end": r["end"]})
+
+    table = pd.DataFrame(records).sort_values("avg", ascending=False).reset_index(drop=True)
+    table.index = table.index + 1
+    csv_path = out_dir / out_name
+    table.to_csv(csv_path, index_label="rank")
+    provenance.write_sidecar(csv_path, parameters=parameters, inputs=inputs)
+    return {"table": csv_path}
+
+
 def all_models_pattern_aggregate(panels: list[Path], out_dir: Path, *, parameters, inputs, cfg,
                                   title: str = "All-patterns aggregate — every model vs humans",
                                   out_name: str = "all_patterns_aggregate_all_models.png") -> dict[str, Path]:

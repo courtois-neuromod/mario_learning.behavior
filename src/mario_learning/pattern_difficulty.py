@@ -60,6 +60,15 @@ def run(
         provenance.write_sidecar(path, parameters=parameters, inputs=inputs)
         paths[f"table_{value_col}"] = path
 
+    # Whole-dataset (not pattern-melted) avg/start/end per metric — the raw
+    # per-clip mean, pooled directly by Stage, not balanced across patterns.
+    # Feeds compare.py's cross-model ranking table.
+    summary = _stage_summary(staged)
+    summary_path = out_dir / "stage_summary.csv"
+    summary.to_csv(summary_path, index=False)
+    provenance.write_sidecar(summary_path, parameters=parameters, inputs=inputs)
+    paths["stage_summary"] = summary_path
+
     for subject, sub_df in metrics.groupby("Subject"):
         fig_path = figs_dir / f"sub-{subject}_cleared_by_pattern.png"
         _figure_subject(sub_df, subject, fig_path, cfg=cfg)
@@ -125,6 +134,21 @@ def _pivot_stage_metric(long_df: pd.DataFrame, value_col: str, agg: str = "mean"
     wide = wide[utils.STAGES]
     wide["improvement"] = wide["late_practice"] - wide["early_discovery"]
     return wide.reset_index().sort_values(["Subject", "pattern"])
+
+
+def _stage_summary(staged: pd.DataFrame) -> pd.DataFrame:
+    """Whole-dataset avg/start/end per metric: raw per-clip mean overall, and
+    restricted to the first (early_discovery) and last (late_practice) stage.
+    """
+    rows = []
+    for col in ["Cleared", "Duration", "ScoreGained"]:
+        rows.append({
+            "variable": col,
+            "avg": staged[col].mean(),
+            "start": staged.loc[staged["Stage"] == "early_discovery", col].mean(),
+            "end": staged.loc[staged["Stage"] == "late_practice", col].mean(),
+        })
+    return pd.DataFrame(rows)
 
 
 def _figure_pooled_by_stage(long_df: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:

@@ -499,11 +499,11 @@ def compare_distribution_distances(c, datasets=None, force=False):
 
 _COMPARE_ALL_MODELS_METRICS = {
     "clear_rate": ("all_patterns_aggregate_clear_rate.png", "all_patterns_aggregate_all_models_clear_rate.png",
-                   "All-patterns aggregate — every model vs humans (clear rate)"),
+                   "All-patterns aggregate — every model vs humans (clear rate)", "Cleared"),
     "duration": ("all_patterns_aggregate_duration.png", "all_patterns_aggregate_all_models_duration.png",
-                 "All-patterns aggregate — every model vs humans (duration)"),
+                 "All-patterns aggregate — every model vs humans (duration)", "Duration"),
     "score": ("all_patterns_aggregate_score.png", "all_patterns_aggregate_all_models_score.png",
-              "All-patterns aggregate — every model vs humans (score)"),
+              "All-patterns aggregate — every model vs humans (score)", "ScoreGained"),
 }
 
 
@@ -512,13 +512,16 @@ _COMPARE_ALL_MODELS_METRICS = {
     "force": "Recompute even if outputs match.",
 })
 def compare_all_models(c, metric="clear_rate", force=False):
-    """Montage every per-model aggregate PNG into one grid, per metric.
+    """Montage every per-model aggregate PNG into one grid, per metric, plus a ranked summary table.
 
     Scans output/compare/<label>/pattern_difficulty/<metric's PNG> across
     every label already produced by `inv compare-pattern-difficulty` (one per
     model variant) and juxtaposes them so models can be compared to each
-    other at a glance. Run compare-pattern-difficulty for each model first —
-    this task does not compute anything new, just arranges existing figures.
+    other at a glance. Also reads each dataset's own `stage_summary.csv`
+    (written by `inv pattern-difficulty`) to build a model_ranking_<metric>.csv
+    table (avg/start/end, sorted by avg). Run compare-pattern-difficulty and
+    pattern-difficulty for each model first — this task does not compute
+    anything new, just arranges/aggregates existing per-dataset outputs.
     """
     from mario_learning import compare as cmp
 
@@ -528,21 +531,43 @@ def compare_all_models(c, metric="clear_rate", force=False):
 
     cfg = utils.load_config()
     compare_root = utils.output_dir(cfg, "compare")
+    pattern_diff_root = utils.output_dir(cfg, "pattern_difficulty")
+    all_names = ["humans"] + sorted(
+        n for n in cfg.get("dataset_groups", {}).get("agent", []) if "_broken_" not in n
+    )
+    out_dir = compare_root / "all_models" / "pattern_difficulty"
+
     for m in metrics:
-        glob_name, out_name, title = _COMPARE_ALL_MODELS_METRICS[m]
+        glob_name, out_name, title, variable = _COMPARE_ALL_MODELS_METRICS[m]
         panels = sorted(
             p for p in compare_root.glob(f"*/pattern_difficulty/{glob_name}")
             if p.parent.parent.name != "all_models"
         )
-        out_dir = compare_root / "all_models" / "pattern_difficulty"
         parameters = {"labels": sorted(p.parent.parent.name for p in panels), "metric": m}
         canary = out_dir / out_name
-        if not force and provenance.check_match(canary, parameters=parameters, inputs=panels):
+        if force or not provenance.check_match(canary, parameters=parameters, inputs=panels):
+            cmp.all_models_pattern_aggregate(panels, out_dir, parameters=parameters, inputs=panels, cfg=cfg,
+                                              title=title, out_name=out_name)
+            log.info("compare-all-models[%s] -> %s", m, out_dir)
+        else:
             log.info("compare-all-models[%s]: cache hit at %s", m, out_dir)
-            continue
-        cmp.all_models_pattern_aggregate(panels, out_dir, parameters=parameters, inputs=panels, cfg=cfg,
-                                          title=title, out_name=out_name)
-        log.info("compare-all-models[%s] -> %s", m, out_dir)
+
+        summary_sources = {
+            name: pattern_diff_root / name / "stage_summary.csv"
+            for name in all_names
+            if (pattern_diff_root / name / "stage_summary.csv").exists()
+        }
+        table_out_name = f"model_ranking_{m}.csv"
+        table_parameters = {"labels": sorted(summary_sources), "variable": variable}
+        table_canary = out_dir / table_out_name
+        if force or not provenance.check_match(table_canary, parameters=table_parameters,
+                                                inputs=list(summary_sources.values())):
+            cmp.all_models_ranking_table(summary_sources, out_dir, parameters=table_parameters,
+                                          inputs=list(summary_sources.values()), cfg=cfg,
+                                          variable=variable, out_name=table_out_name)
+            log.info("compare-all-models[%s] ranking -> %s", m, out_dir / table_out_name)
+        else:
+            log.info("compare-all-models[%s] ranking: cache hit at %s", m, out_dir / table_out_name)
 
 
 # ---------------------------------------------------------------------------
