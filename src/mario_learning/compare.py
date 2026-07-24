@@ -270,10 +270,36 @@ def pattern_difficulty(datasets: dict[str, Path], out_dir: Path, *, parameters, 
     paths["figure_all_patterns_grid"] = grid_path
 
     # ---- all-patterns aggregate (single panel, pooled across patterns) ----
-    agg_path = out_dir / "all_patterns_aggregate.png"
+    agg_path = out_dir / "all_patterns_aggregate_clear_rate.png"
     _figure_all_patterns_aggregate(long_stage, agg_path, cfg=cfg)
     provenance.write_sidecar(agg_path, parameters=parameters, inputs=inputs)
-    paths["figure_all_patterns_aggregate"] = agg_path
+    paths["figure_all_patterns_aggregate_clear_rate"] = agg_path
+
+    # ---- same aggregate figure for other per-clip metrics (duration, score) ----
+    for key, csv_name, value_col, y_label in [
+        ("duration", "pattern_metrics_duration.csv", "Duration", "Duration (s)"),
+        ("score", "pattern_metrics_score.csv", "ScoreGained", "Score gained"),
+    ]:
+        metric_sources = {name: Path(p) / csv_name for name, p in datasets.items()}
+        assert_inputs_exist(metric_sources, f"pattern-difficulty ({key})")
+        metric_frames = []
+        for name, csv in metric_sources.items():
+            df = pd.read_csv(csv)
+            df["dataset"] = name
+            metric_frames.append(df)
+        metric_merged = pd.concat(metric_frames, ignore_index=True)
+        metric_csv_path = out_dir / csv_name
+        metric_merged.to_csv(metric_csv_path, index=False)
+        provenance.write_sidecar(metric_csv_path, parameters=parameters, inputs=inputs)
+
+        metric_long_stage = _melt_stage_metrics(metric_merged, value_name=value_col)
+        metric_agg_path = out_dir / f"all_patterns_aggregate_{key}.png"
+        _figure_stage_aggregate(
+            metric_long_stage, metric_agg_path, cfg=cfg, value_col=value_col, y_label=y_label,
+            title=f"All patterns aggregated — {y_label} (shape = subject, colour = stage)",
+        )
+        provenance.write_sidecar(metric_agg_path, parameters=parameters, inputs=inputs)
+        paths[f"figure_all_patterns_aggregate_{key}"] = metric_agg_path
 
     return paths
 
@@ -320,13 +346,13 @@ def _figure_stage_per_subject(long_stage: pd.DataFrame, subject: str, out_path: 
     plots.save_figure(fig, out_path, dpi=style["dpi"])
 
 
-def _melt_stage_metrics(merged: pd.DataFrame) -> pd.DataFrame:
-    """Wide-form pattern_metrics → long (dataset, Subject, pattern, Stage, Cleared)."""
+def _melt_stage_metrics(merged: pd.DataFrame, value_name: str = "Cleared") -> pd.DataFrame:
+    """Wide-form pattern_metrics → long (dataset, Subject, pattern, Stage, `value_name`)."""
     return merged.melt(
         id_vars=["dataset", "Subject", "pattern"],
         value_vars=utils.STAGES,
-        var_name="Stage", value_name="Cleared",
-    ).dropna(subset=["Cleared"])
+        var_name="Stage", value_name=value_name,
+    ).dropna(subset=[value_name])
 
 
 def _pool_clips_by_dataset(datasets: dict[str, Path], cfg: dict) -> pd.DataFrame:
@@ -447,10 +473,11 @@ def _stage_track_style(datasets_order: list[str]) -> tuple[dict, dict, dict]:
 
 def _draw_subject_stage_panel(ax, data: pd.DataFrame, *, datasets_order: list[str], subjects: list,
                                cmap_by_ds: dict, ls_by_ds: dict, stage_colors_by_ds: dict,
-                               x_pos: np.ndarray, marker_size: float = 5) -> None:
+                               x_pos: np.ndarray, marker_size: float = 5,
+                               value_col: str = "Cleared") -> None:
     """Draw subject tracks (marker=subject, colour=stage) plus a bold per-dataset average line.
 
-    ``data`` must carry columns dataset / Subject / Stage / Cleared, already
+    ``data`` must carry columns dataset / Subject / Stage / `value_col`, already
     restricted to whatever slice (one pattern, or pooled across patterns) the
     caller wants plotted in this single panel.
     """
@@ -461,7 +488,7 @@ def _draw_subject_stage_panel(ax, data: pd.DataFrame, *, datasets_order: list[st
         for s_idx, subject in enumerate(subjects):
             marker = MARKERS[s_idx % len(MARKERS)]
             vals = (ds_data[ds_data["Subject"] == subject]
-                    .set_index("Stage")["Cleared"]
+                    .set_index("Stage")[value_col]
                     .reindex(utils.STAGES).values.astype(float))
             valid = ~np.isnan(vals)
             if not valid.any():
@@ -474,7 +501,7 @@ def _draw_subject_stage_panel(ax, data: pd.DataFrame, *, datasets_order: list[st
                             linestyle="none", markeredgecolor="white",
                             markeredgewidth=0.3, zorder=2)
         # average line across subjects
-        avg = (ds_data.groupby("Stage", observed=True)["Cleared"]
+        avg = (ds_data.groupby("Stage", observed=True)[value_col]
                .mean().reindex(utils.STAGES).values.astype(float))
         ax.plot(x_pos, avg, color=cmap_by_ds[ds](0.6), lw=2.0,
                 linestyle=ls, zorder=3)
@@ -573,14 +600,20 @@ def _figure_all_patterns_grid(long_stage: pd.DataFrame, out_path: Path, *, cfg: 
     plots.save_figure(fig, out_path, dpi=style["dpi"])
 
 
-def _figure_all_patterns_aggregate(long_stage: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
+def _figure_stage_aggregate(long_stage: pd.DataFrame, out_path: Path, *, cfg: dict,
+                             value_col: str = "Cleared", y_label: str | None = None,
+                             ylim: tuple[float, float] | None = None,
+                             y_ticks: np.ndarray | None = None,
+                             title: str | None = None) -> None:
     """Single-panel version of the all-patterns grid, pooled across patterns.
 
     Same encoding as one cell of ``all_patterns_subject_tracks.png`` (marker
     shape = subject, marker colour = stage, bold line = per-dataset average),
     but each subject's per-stage value is averaged across *all* patterns first,
     so the figure shows one aggregate humans line and one aggregate agent line
-    plus the individual subject tracks behind them.
+    plus the individual subject tracks behind them. Generalised over
+    ``value_col`` so the same figure can be built for clear rate, duration,
+    score, etc.
     """
     style = plots.style(cfg)
     datasets_order = sorted(long_stage["dataset"].unique())
@@ -592,30 +625,87 @@ def _figure_all_patterns_aggregate(long_stage: pd.DataFrame, out_path: Path, *, 
     magma = plt.get_cmap("magma")
     cmap_by_ds, ls_by_ds, stage_colors_by_ds = _stage_track_style(datasets_order)
 
-    # Pool across patterns: mean Cleared per (dataset, Subject, Stage).
-    agg = long_stage.groupby(["dataset", "Subject", "Stage"], observed=True)["Cleared"].mean().reset_index()
+    # Pool across patterns: mean value per (dataset, Subject, Stage).
+    agg = long_stage.groupby(["dataset", "Subject", "Stage"], observed=True)[value_col].mean().reset_index()
 
     fig, ax = plt.subplots(figsize=(8, 6))
     _draw_subject_stage_panel(ax, agg, datasets_order=datasets_order, subjects=subjects,
                                cmap_by_ds=cmap_by_ds, ls_by_ds=ls_by_ds,
-                               stage_colors_by_ds=stage_colors_by_ds, x_pos=x_pos, marker_size=7)
+                               stage_colors_by_ds=stage_colors_by_ds, x_pos=x_pos, marker_size=7,
+                               value_col=value_col)
 
     ax.set_xticks(x_pos)
     ax.set_xticklabels(STAGE_ABBREV, fontsize=9, rotation=30, ha="right")
-    ax.set_ylim(0, 1.05)
-    ax.set_yticks(np.arange(0, 1.1, 0.1))
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    if y_ticks is not None:
+        ax.set_yticks(y_ticks)
     ax.tick_params(axis="y", labelsize=8)
-    ax.set_ylabel("Cleared", fontsize=10)
+    ax.set_ylabel(y_label or value_col, fontsize=10)
     ax.set_xlabel("Stage")
     ax.grid(axis="y", alpha=0.3)
     ax.set_axisbelow(True)
-    ax.set_title("All patterns aggregated — subject tracks (shape = subject, colour = stage)", fontsize=11)
+    ax.set_title(title or f"All patterns aggregated — {y_label or value_col} "
+                          f"(shape = subject, colour = stage)", fontsize=11)
 
     legend_handles = _subject_stage_legend_handles(datasets_order, subjects, cmap_by_ds, ls_by_ds, viridis, magma)
     ax.legend(handles=legend_handles, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7)
 
     fig.tight_layout()
     plots.save_figure(fig, out_path, dpi=style["dpi"])
+
+
+def _figure_all_patterns_aggregate(long_stage: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
+    """Clear-rate aggregate figure — see `_figure_stage_aggregate`."""
+    _figure_stage_aggregate(
+        long_stage, out_path, cfg=cfg, value_col="Cleared", y_label="Cleared",
+        ylim=(0, 1.05), y_ticks=np.arange(0, 1.1, 0.1),
+        title="All patterns aggregated — subject tracks (shape = subject, colour = stage)",
+    )
+
+
+def all_models_pattern_aggregate(panels: list[Path], out_dir: Path, *, parameters, inputs, cfg,
+                                  title: str = "All-patterns aggregate — every model vs humans",
+                                  out_name: str = "all_patterns_aggregate_all_models.png") -> dict[str, Path]:
+    """Montage every per-model aggregate PNG (one metric) into one grid.
+
+    Each panel is the existing humans-vs-that-model aggregate figure,
+    unchanged — this just juxtaposes every model variant so they can be
+    eyeballed against each other. ``panels`` is the list of discovered
+    per-label PNG paths (``compare/<label>/pattern_difficulty/<glob_name>``).
+    """
+    import matplotlib.image as mpimg
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if not panels:
+        raise FileNotFoundError(
+            "compare-all-models: no per-model aggregate PNGs found. "
+            "Run `inv compare-pattern-difficulty --datasets humans,<agent>` for each model first."
+        )
+
+    ncols = min(4, len(panels))
+    nrows = -(-len(panels) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 5.5, nrows * 5), squeeze=False)
+
+    for idx, png_path in enumerate(panels):
+        ax = axes[idx // ncols][idx % ncols]
+        label = png_path.parent.parent.name
+        ax.imshow(mpimg.imread(png_path))
+        ax.set_title(label, fontsize=11)
+        ax.axis("off")
+
+    for idx in range(len(panels), nrows * ncols):
+        axes[idx // ncols][idx % ncols].axis("off")
+
+    fig.suptitle(title, fontsize=13, y=1.0)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig_path = out_dir / out_name
+    style = plots.style(cfg)
+    plots.save_figure(fig, fig_path, dpi=style["dpi"])
+    provenance.write_sidecar(fig_path, parameters=parameters, inputs=inputs)
+    return {"figure": fig_path}
 
 
 def _figure_per_pattern_lines(long_stage: pd.DataFrame, out_dir: Path, *, cfg: dict) -> dict[str, Path]:

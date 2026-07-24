@@ -127,7 +127,7 @@ def descriptive(c, dataset, subject=None, session=None, run=None, force=False):
 
     cfg = utils.load_config()
     for name, path in _resolve_datasets(cfg, dataset):
-        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force=False)
         out_dir = utils.output_dir(cfg, "descriptive") / name
 
         canary = out_dir / "subjects.csv"
@@ -152,7 +152,7 @@ def learning_curves(c, dataset, subject=None, session=None, run=None, force=Fals
 
     cfg = utils.load_config()
     for name, path in _resolve_datasets(cfg, dataset):
-        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force=False)
         parameters = {**parameters, "smoothing_window": cfg["analysis"]["learning_curves"]["smoothing_window"]}
         out_dir = utils.output_dir(cfg, "learning_curves") / name
 
@@ -177,7 +177,7 @@ def summary(c, dataset, subject=None, session=None, run=None, force=False):
 
     cfg = utils.load_config()
     for name, path in _resolve_datasets(cfg, dataset):
-        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force=False)
         out_dir = utils.output_dir(cfg, "summary") / name
 
         canary = out_dir / "per_level_per_scene.csv"
@@ -201,7 +201,7 @@ def pattern_performance(c, dataset, subject=None, session=None, run=None, force=
 
     cfg = utils.load_config()
     for name, path in _resolve_datasets(cfg, dataset):
-        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force=False)
         out_dir = utils.output_dir(cfg, "pattern_performance") / name
 
         canary = out_dir / "per_subject_pattern.csv"
@@ -225,7 +225,7 @@ def pattern_difficulty(c, dataset, subject=None, session=None, run=None, force=F
 
     cfg = utils.load_config()
     for name, path in _resolve_datasets(cfg, dataset):
-        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force=False)
         parameters = {**parameters, **cfg["analysis"]["pattern_difficulty"]}
         out_dir = utils.output_dir(cfg, "pattern_difficulty") / name
 
@@ -250,7 +250,7 @@ def clustering(c, dataset, subject=None, session=None, run=None, force=False):
 
     cfg = utils.load_config()
     for name, path in _resolve_datasets(cfg, dataset):
-        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force=False)
         parameters = {**parameters, **cfg["analysis"]["clustering"]}
         out_dir = utils.output_dir(cfg, "clustering") / name
 
@@ -275,7 +275,7 @@ def traces(c, dataset, subject=None, session=None, run=None, force=False):
 
     cfg = utils.load_config()
     for name, path in _resolve_datasets(cfg, dataset):
-        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force=False)
         parameters = {**parameters, **cfg["analysis"]["traces"]}
         out_dir = utils.output_dir(cfg, "traces") / name
 
@@ -303,7 +303,7 @@ def survival(c, dataset, subject=None, session=None, run=None, force=False):
 
     cfg = utils.load_config()
     for name, path in _resolve_datasets(cfg, dataset):
-        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force=False)
         parameters = {**parameters, **cfg["analysis"]["survival"]}
         out_dir = utils.output_dir(cfg, "survival") / name
 
@@ -328,7 +328,7 @@ def distribution_distances(c, dataset, subject=None, session=None, run=None, for
 
     cfg = utils.load_config()
     for name, path in _resolve_datasets(cfg, dataset):
-        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force)
+        df, parameters, inputs = _load_clips_for_task(cfg, name, path, subject, session, run, force=False)
         parameters = {**parameters, **cfg["analysis"]["distribution_distances"]}
         out_dir = utils.output_dir(cfg, "distribution_distances") / name
 
@@ -497,6 +497,54 @@ def compare_distribution_distances(c, datasets=None, force=False):
     _run_compare(c, "distribution_distances", datasets, force, cmp.distribution_distances)
 
 
+_COMPARE_ALL_MODELS_METRICS = {
+    "clear_rate": ("all_patterns_aggregate_clear_rate.png", "all_patterns_aggregate_all_models_clear_rate.png",
+                   "All-patterns aggregate — every model vs humans (clear rate)"),
+    "duration": ("all_patterns_aggregate_duration.png", "all_patterns_aggregate_all_models_duration.png",
+                 "All-patterns aggregate — every model vs humans (duration)"),
+    "score": ("all_patterns_aggregate_score.png", "all_patterns_aggregate_all_models_score.png",
+              "All-patterns aggregate — every model vs humans (score)"),
+}
+
+
+@task(name="compare-all-models", help={
+    "metric": "Which per-pattern-difficulty metric to montage: clear_rate (default), duration, score, or 'all'.",
+    "force": "Recompute even if outputs match.",
+})
+def compare_all_models(c, metric="clear_rate", force=False):
+    """Montage every per-model aggregate PNG into one grid, per metric.
+
+    Scans output/compare/<label>/pattern_difficulty/<metric's PNG> across
+    every label already produced by `inv compare-pattern-difficulty` (one per
+    model variant) and juxtaposes them so models can be compared to each
+    other at a glance. Run compare-pattern-difficulty for each model first —
+    this task does not compute anything new, just arranges existing figures.
+    """
+    from mario_learning import compare as cmp
+
+    if metric not in _COMPARE_ALL_MODELS_METRICS and metric != "all":
+        raise ValueError(f"metric must be one of {list(_COMPARE_ALL_MODELS_METRICS)} or 'all', got {metric!r}")
+    metrics = list(_COMPARE_ALL_MODELS_METRICS) if metric == "all" else [metric]
+
+    cfg = utils.load_config()
+    compare_root = utils.output_dir(cfg, "compare")
+    for m in metrics:
+        glob_name, out_name, title = _COMPARE_ALL_MODELS_METRICS[m]
+        panels = sorted(
+            p for p in compare_root.glob(f"*/pattern_difficulty/{glob_name}")
+            if p.parent.parent.name != "all_models"
+        )
+        out_dir = compare_root / "all_models" / "pattern_difficulty"
+        parameters = {"labels": sorted(p.parent.parent.name for p in panels), "metric": m}
+        canary = out_dir / out_name
+        if not force and provenance.check_match(canary, parameters=parameters, inputs=panels):
+            log.info("compare-all-models[%s]: cache hit at %s", m, out_dir)
+            continue
+        cmp.all_models_pattern_aggregate(panels, out_dir, parameters=parameters, inputs=panels, cfg=cfg,
+                                          title=title, out_name=out_name)
+        log.info("compare-all-models[%s] -> %s", m, out_dir)
+
+
 # ---------------------------------------------------------------------------
 # Namespace
 # ---------------------------------------------------------------------------
@@ -522,3 +570,4 @@ ns.add_task(compare_summary)
 ns.add_task(compare_traces)
 ns.add_task(compare_survival)
 ns.add_task(compare_distribution_distances)
+ns.add_task(compare_all_models)

@@ -45,34 +45,36 @@ def load_clips(
 ) -> pd.DataFrame:
     """Return the per-clip DataFrame for one dataset, building/caching as needed.
 
-    The cache is keyed on (dataset_name, subjects, sessions, runs). The sidecar
-    digests every contributing ``_summary.json`` path/size/mtime; if any of
-    them change, the cache misses and the parquet is rebuilt.
+    If a cached parquet already exists (and ``force`` isn't set), it's read
+    directly — no re-scan of ``dataset_path``. This matters when raw
+    ``_summary.json`` files aren't reachable locally (e.g. a cache built on a
+    cluster and synced down without the source data): as long as the cache
+    exists, it's trusted as-is. Pass ``force=True`` to rebuild from raw data
+    (which does need to exist at ``dataset_path`` in that case).
     """
     dataset_path = Path(dataset_path)
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = cache_dir / "clips.parquet"
 
-    summary_paths = utils.list_summary_jsons(dataset_path, subjects, sessions)
-    if not summary_paths:
-        raise FileNotFoundError(
-            f"No *_summary.json files found under {dataset_path} matching "
-            f"subjects={subjects}, sessions={sessions}."
-        )
-
-    parameters = {
-        "dataset_name": dataset_name,
-        "dataset_path": str(dataset_path),
-        "subjects": subjects,
-        "sessions": sessions,
-        "runs": runs,
-    }
-
-    if not force and provenance.check_match(parquet_path, parameters=parameters, inputs=summary_paths):
+    if not force and parquet_path.exists():
         log.info("Cache hit: %s (%d clips)", parquet_path, _row_count(parquet_path))
         df = pd.read_parquet(parquet_path)
     else:
+        summary_paths = utils.list_summary_jsons(dataset_path, subjects, sessions)
+        if not summary_paths:
+            raise FileNotFoundError(
+                f"No cached {parquet_path} and no *_summary.json files found under "
+                f"{dataset_path} (subjects={subjects}, sessions={sessions}). "
+                f"Run `inv load --dataset {dataset_name}` first."
+            )
+        parameters = {
+            "dataset_name": dataset_name,
+            "dataset_path": str(dataset_path),
+            "subjects": subjects,
+            "sessions": sessions,
+            "runs": runs,
+        }
         log.info("Building clips DataFrame from %d summary files ...", len(summary_paths))
         df = _build_dataframe(summary_paths, dataset_name)
         df.to_parquet(parquet_path, index=False)

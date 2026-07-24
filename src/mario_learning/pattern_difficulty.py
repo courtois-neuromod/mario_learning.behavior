@@ -49,6 +49,17 @@ def run(
     provenance.write_sidecar(metrics_path, parameters=parameters, inputs=inputs)
     paths: dict[str, Path] = {"table": metrics_path}
 
+    # Same (Subject, pattern) x stage layout as `pattern_metrics.csv`, but for
+    # other per-clip metrics — lets compare.py build the same aggregate-track
+    # figures for duration/score that it builds for clear rate.
+    for fname, value_col in [("pattern_metrics_duration.csv", "Duration"),
+                              ("pattern_metrics_score.csv", "ScoreGained")]:
+        wide = _pivot_stage_metric(long_df, value_col)
+        path = out_dir / fname
+        wide.to_csv(path, index=False)
+        provenance.write_sidecar(path, parameters=parameters, inputs=inputs)
+        paths[f"table_{value_col}"] = path
+
     for subject, sub_df in metrics.groupby("Subject"):
         fig_path = figs_dir / f"sub-{subject}_cleared_by_pattern.png"
         _figure_subject(sub_df, subject, fig_path, cfg=cfg)
@@ -97,6 +108,23 @@ def _compute_metrics(long_df: pd.DataFrame) -> pd.DataFrame:
 
     wide = pd.concat([clear_wide, n_wide], axis=1).reset_index()
     return wide.sort_values(["Subject", "pattern"])
+
+
+def _pivot_stage_metric(long_df: pd.DataFrame, value_col: str, agg: str = "mean") -> pd.DataFrame:
+    """Wide-form (Subject, pattern) x stage columns of `value_col`, aggregated by `agg`.
+
+    Same shape as the clear-rate table in `_compute_metrics` (stage columns,
+    plus an `improvement = late_practice - early_discovery` column) but for
+    an arbitrary per-clip metric.
+    """
+    wide = (long_df.groupby(["Subject", "pattern", "Stage"], observed=True)[value_col]
+            .agg(agg).unstack("Stage"))
+    for stage in utils.STAGES:
+        if stage not in wide.columns:
+            wide[stage] = np.nan
+    wide = wide[utils.STAGES]
+    wide["improvement"] = wide["late_practice"] - wide["early_discovery"]
+    return wide.reset_index().sort_values(["Subject", "pattern"])
 
 
 def _figure_pooled_by_stage(long_df: pd.DataFrame, out_path: Path, *, cfg: dict) -> None:
