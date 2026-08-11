@@ -52,18 +52,21 @@ def run(
     # Same (Subject, pattern) x stage layout as `pattern_metrics.csv`, but for
     # other per-clip metrics — lets compare.py build the same aggregate-track
     # figures for duration/score that it builds for clear rate.
+    wide_by_variable = {"Cleared": metrics}
     for fname, value_col in [("pattern_metrics_duration.csv", "Duration"),
                               ("pattern_metrics_score.csv", "ScoreGained")]:
         wide = _pivot_stage_metric(long_df, value_col)
+        wide_by_variable[value_col] = wide
         path = out_dir / fname
         wide.to_csv(path, index=False)
         provenance.write_sidecar(path, parameters=parameters, inputs=inputs)
         paths[f"table_{value_col}"] = path
 
-    # Whole-dataset (not pattern-melted) avg/start/end per metric — the raw
-    # per-clip mean, pooled directly by Stage, not balanced across patterns.
-    # Feeds compare.py's cross-model ranking table.
-    summary = _stage_summary(staged)
+    # avg/early_discovery/late_practice per metric, pattern-and-subject-balanced
+    # the same way the aggregate figures are (average across patterns within
+    # each subject, then across subjects) — not a raw per-clip mean. Feeds
+    # compare.py's cross-model ranking table, so it reads the same as the plots.
+    summary = _stage_summary(wide_by_variable)
     summary_path = out_dir / "stage_summary.csv"
     summary.to_csv(summary_path, index=False)
     provenance.write_sidecar(summary_path, parameters=parameters, inputs=inputs)
@@ -136,17 +139,25 @@ def _pivot_stage_metric(long_df: pd.DataFrame, value_col: str, agg: str = "mean"
     return wide.reset_index().sort_values(["Subject", "pattern"])
 
 
-def _stage_summary(staged: pd.DataFrame) -> pd.DataFrame:
-    """Whole-dataset avg/start/end per metric: raw per-clip mean overall, and
-    restricted to the first (early_discovery) and last (late_practice) stage.
+def _stage_summary(wide_by_variable: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Pattern-and-subject-balanced avg/early_discovery/late_practice per metric.
+
+    Matches the two-step weighting the aggregate figures use (compare.py's
+    `_figure_stage_aggregate`): average across patterns within each subject
+    first (no pattern dominates by clip volume), then average across
+    subjects (no subject dominates by clip volume) — not a raw per-clip mean.
+    `avg` extends this to all 6 stages (mean of the per-subject, per-pattern-
+    balanced stage values), rather than pooling raw clips regardless of stage.
     """
     rows = []
-    for col in ["Cleared", "Duration", "ScoreGained"]:
+    for variable, wide in wide_by_variable.items():
+        per_subject_stage = wide.groupby("Subject")[utils.STAGES].mean()
+        stage_avg = per_subject_stage.mean()
         rows.append({
-            "variable": col,
-            "avg": staged[col].mean(),
-            "start": staged.loc[staged["Stage"] == "early_discovery", col].mean(),
-            "end": staged.loc[staged["Stage"] == "late_practice", col].mean(),
+            "variable": variable,
+            "avg": per_subject_stage.mean(axis=1).mean(),
+            "early_discovery": stage_avg["early_discovery"],
+            "late_practice": stage_avg["late_practice"],
         })
     return pd.DataFrame(rows)
 

@@ -569,6 +569,26 @@ def compare_all_models(c, metric="clear_rate", force=False):
         else:
             log.info("compare-all-models[%s] ranking: cache hit at %s", m, out_dir / table_out_name)
 
+    # ---- one combined table: clear_rate / duration / score side by side ----
+    combined_summary_sources = {
+        name: pattern_diff_root / name / "stage_summary.csv"
+        for name in all_names
+        if (pattern_diff_root / name / "stage_summary.csv").exists()
+    }
+    combined_out_name = "model_ranking_combined.csv"
+    combined_parameters = {"labels": sorted(combined_summary_sources), "sort_by": "clear_rate"}
+    combined_canary = out_dir / combined_out_name
+    if force or not provenance.check_match(combined_canary, parameters=combined_parameters,
+                                            inputs=list(combined_summary_sources.values())):
+        cmp.all_models_combined_ranking_table(
+            combined_summary_sources, out_dir, parameters=combined_parameters,
+            inputs=list(combined_summary_sources.values()), cfg=cfg,
+            out_name=combined_out_name, sort_by="clear_rate",
+        )
+        log.info("compare-all-models combined ranking -> %s", out_dir / combined_out_name)
+    else:
+        log.info("compare-all-models combined ranking: cache hit at %s", out_dir / combined_out_name)
+
 
 # ---------------------------------------------------------------------------
 # Namespace

@@ -666,11 +666,12 @@ def _figure_all_patterns_aggregate(long_stage: pd.DataFrame, out_path: Path, *, 
 
 def all_models_ranking_table(summary_sources: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg,
                               variable: str, out_name: str) -> dict[str, Path]:
-    """Rank every model by avg/start/end of one metric, reading each dataset's `stage_summary.csv`.
+    """Rank every model by avg/early_discovery/late_practice/delta of one metric, reading each dataset's `stage_summary.csv`.
 
     `summary_sources` maps dataset name -> its `stage_difficulty` `stage_summary.csv`
-    path. Rows are the whole-dataset raw per-clip mean (not pattern-balanced),
-    sorted by `avg` descending.
+    path. Values are pattern-and-subject-balanced (see `_stage_summary`), same
+    weighting as the aggregate figures. `delta` = late_practice - early_discovery
+    (learning over the session). Sorted by `avg` descending, values rounded to 3dp.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -682,10 +683,52 @@ def all_models_ranking_table(summary_sources: dict[str, Path], out_dir: Path, *,
         if row.empty:
             continue
         r = row.iloc[0]
-        records.append({"model": name, "avg": r["avg"], "start": r["start"], "end": r["end"]})
+        records.append({
+            "model": name, "avg": r["avg"],
+            "early_discovery": r["early_discovery"], "late_practice": r["late_practice"],
+            "delta": r["late_practice"] - r["early_discovery"],
+        })
 
     table = pd.DataFrame(records).sort_values("avg", ascending=False).reset_index(drop=True)
     table.index = table.index + 1
+    table = table.round({c: 3 for c in table.columns if c != "model"})
+    csv_path = out_dir / out_name
+    table.to_csv(csv_path, index_label="rank")
+    provenance.write_sidecar(csv_path, parameters=parameters, inputs=inputs)
+    return {"table": csv_path}
+
+
+def all_models_combined_ranking_table(summary_sources: dict[str, Path], out_dir: Path, *, parameters, inputs, cfg,
+                                       out_name: str = "model_ranking_combined.csv",
+                                       sort_by: str = "clear_rate") -> dict[str, Path]:
+    """One row per model with avg/early_discovery/late_practice/delta clear rate, duration, and score side by side.
+
+    Reads each dataset's `stage_summary.csv` and pulls avg/early_discovery/
+    late_practice for Cleared / Duration / ScoreGained into `{col}_avg` /
+    `{col}_early_discovery` / `{col}_late_practice` columns, plus a
+    `{col}_delta` = late_practice - early_discovery (learning over the
+    session), sorted by `sort_by`'s avg (one of clear_rate/duration/score)
+    descending, values rounded to 3dp.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    variable_by_col = {"clear_rate": "Cleared", "duration": "Duration", "score": "ScoreGained"}
+    records = []
+    for name, csv_path in summary_sources.items():
+        by_variable = pd.read_csv(csv_path).set_index("variable")
+        row = {"model": name}
+        for col, var in variable_by_col.items():
+            stats = by_variable.loc[var] if var in by_variable.index else None
+            row[f"{col}_avg"] = stats["avg"] if stats is not None else None
+            row[f"{col}_early_discovery"] = stats["early_discovery"] if stats is not None else None
+            row[f"{col}_late_practice"] = stats["late_practice"] if stats is not None else None
+            row[f"{col}_delta"] = (stats["late_practice"] - stats["early_discovery"]) if stats is not None else None
+        records.append(row)
+
+    table = pd.DataFrame(records).sort_values(f"{sort_by}_avg", ascending=False).reset_index(drop=True)
+    table.index = table.index + 1
+    table = table.round({c: 3 for c in table.columns if c != "model"})
     csv_path = out_dir / out_name
     table.to_csv(csv_path, index_label="rank")
     provenance.write_sidecar(csv_path, parameters=parameters, inputs=inputs)
