@@ -75,6 +75,79 @@ narrow scope, and `--force` to bypass the sidecar-driven idempotency cache.
 See `TASKS.md` for per-task details and `.AGENTS.md` for the project's
 operating principles.
 
+## Compare every agent variant against humans
+
+`config.yaml`'s `agent` dataset group auto-discovers every agent-produced
+dataset (`agent_ppo_packnet`, `agent_dqn_vanilla`, …) — `cfg['dataset_groups']['agent']`
+lists every currently-registered name. To (re)build the clear-rate / duration
+/ score comparison figures and the cross-model ranking tables for **all** of
+them against humans:
+
+```bash
+# 1. Per-dataset pattern-difficulty analysis (writes pattern_metrics.csv,
+#    pattern_metrics_duration.csv, pattern_metrics_score.csv, stage_summary.csv
+#    under output/pattern_difficulty/<name>/). Add --force to rebuild ones
+#    that already exist but predate the duration/score/stage_summary outputs.
+inv pattern-difficulty --dataset humans,agent
+
+# 2. Humans-vs-one-agent comparison figures — has to run once per agent (the
+#    figures assume exactly two datasets), so it's a loop. Writes
+#    output/compare/<model_label>/pattern_difficulty/all_patterns_aggregate_{clear_rate,duration,score}.png
+for a in $(python3 -c "
+from mario_learning import utils
+cfg = utils.load_config()
+print(' '.join(sorted(cfg['dataset_groups']['agent'])))
+"); do
+  inv compare-pattern-difficulty --datasets humans,"$a"
+done
+
+# 3. Montage every model's aggregate figure into one grid per metric, plus
+#    rank every model by avg/early_discovery/late_practice/delta.
+#    Writes to output/compare/all_models/pattern_difficulty/:
+#      all_patterns_aggregate_all_models_{clear_rate,duration,score}.png
+#      model_ranking_{clear_rate,duration,score}.csv
+#      model_ranking_combined.csv   (all three metrics side by side)
+inv compare-all-models --metric all
+```
+
+All three steps are idempotent (cache-hit and skip if outputs already match
+their sidecars) — add `--force` to any of them to force a rebuild, e.g. after
+fixing bad source data for one model. Step 1 only needs to be re-run with
+`--force` for datasets that predate a given output file (check
+`output/pattern_difficulty/<name>/` for `stage_summary.csv` etc.); step 3
+always cheaply recombines whatever step 1/2 outputs already exist, so it's
+safe to re-run on its own after adding or fixing one model.
+
+### How the averages are computed
+
+Every "one number per stage" you see — on the aggregate figures and in
+`stage_summary.csv` / `model_ranking_*.csv` — is a three-level nested mean,
+not a raw per-clip average:
+
+1. **Clip-level, per `(Subject, pattern, Stage)`**: average the raw
+   `Cleared`/`Duration`/`ScoreGained` values of every clip in that cell
+   (`pattern_metrics*.csv`). A clip belongs to every pattern its scene has
+   flagged, so it can contribute to several cells at once.
+2. **Average across patterns**, per `(Subject, Stage)`: average that
+   subject's ~27 pattern-level cells. Each pattern counts once, regardless
+   of how many clips it has — a pattern with 5 clips carries the same weight
+   as one with 5,000.
+3. **Average across subjects**, per `Stage`: average the 5 subjects'
+   numbers from step 2. Each subject counts once, regardless of clip volume.
+
+So the final per-stage number is "the average pattern, averaged over the
+average subject" — not "the average clip." `avg` in `stage_summary.csv`
+extends step 3 across all 6 stages instead of reporting one; `early_discovery`
+and `late_practice` are just that stage's value; `delta` is
+`late_practice − early_discovery` (for `duration`, a *negative* delta is the
+improvement direction — faster clips — the opposite sign convention from
+`clear_rate`/`score`, where positive means improvement).
+
+Step 1 (`stage_summary.csv`, per single dataset) and step 2 (the aggregate
+figures, per humans-vs-agent pair) each recompute this independently from
+their own merged/unmerged tables — they use the identical formula, so the
+numbers match, but neither reads the other's output.
+
 ## Layout
 
 ```
